@@ -1,0 +1,16 @@
+[package]
+name = "yamplate"
+version = "0.1.0"
+authors = ["Alexander Koval <kovalidis@gmail.com>"]
+edition = "2018"
+
+[lib]
+name = "yamplate"
+path = "src/lib.rs"
+
+[[bin]]
+name = "yamplate"
+path = "src/main.rs"
+
+[dependencies]
+quire = "0.4.1"

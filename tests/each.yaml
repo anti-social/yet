@@ -1,0 +1,6 @@
+- !*Each
+  values: values.models
+  loop:
+    'model.{{model.name}}':
+      color: '{{model.color}}'
+      size: '{{model.size}}'

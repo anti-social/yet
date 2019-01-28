@@ -1,0 +1,6 @@
+- !*If
+  condition: values.is-active
+  then:
+    command: [run]
+  else:
+    command: [echo, run]
