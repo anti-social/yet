@@ -1,0 +1,10 @@
+---
+test:
+  string: '{{values.str}}'
+  boolean: '{{values.bool}}'
+  boolean_inside_string: 'Is active: {{values.bool}}'
+  string_and_boolean: '{{values.str}}: {{values.bool}}'
+...
+---
+values:
+  test: true

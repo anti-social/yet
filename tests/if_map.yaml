@@ -1,0 +1,24 @@
+---
+# Template
+# Meaningless names like `_1` are ugly. Can we do better?
+_1: !*If
+  condition: ${values.is-debug}
+  then:
+    description: Run in debug mode
+    _1: !*If
+      condition: ${values.with-reload
+        command: [run, --reload]
+      else:
+        command: [run, --debug, --reload]
+  else:
+    description: Run in production mode
+    command: [run]
+
+---
+# Values
+is-debug: true
+with-reload: false
+---
+# Result
+description: Run in debug mode
+command: [run, --debugu]

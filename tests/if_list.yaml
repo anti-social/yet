@@ -1,0 +1,36 @@
+---
+# Template
+commands:
+- test
+- !*If
+  # Do we really need a substitution syntax there?
+  # Maybe next is fine too:
+  # condition: values.with-run
+  condition: ${values.with-run}
+  then: [run]
+
+tests:
+  all:
+  - !*If
+    # TODO: Support for expressions: ${values.tests-type == integ}
+    condition: ${values.is-integ-tests}
+    then:
+    - integ1
+    - integ2
+    else:
+    - unit1
+    - unit2
+
+---
+# Values
+with-run: true
+is-integ-tests: false
+---
+# Result
+commands:
+- test
+- run
+tests:
+  all:
+  - unit1
+  - unit2
