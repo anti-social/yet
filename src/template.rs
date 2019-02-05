@@ -74,24 +74,24 @@ fn clone_ast(ast: &Ast) -> Ast {
     }
 }
 
-pub fn parse(fname: &str) -> Result<Ast, quire::Error> {
+pub fn parse(fname: &str) -> Result<Vec<Ast>, quire::Error> {
     let ref mut content = String::new();
     File::open(fname).unwrap().read_to_string(content);
 
     let errors = quire::ErrorCollector::new();
-    quire::raw_parse(Rc::new(fname.to_string()), content, |doc| {
+    quire::raw_parse_all(Rc::new(fname.to_string()), content, |doc| {
         quire::ast::process(&quire::Options::default(), doc, &errors)
     })
 }
 
-pub struct RenderContext {
-    values: Ast,
+pub struct RenderContext<'a> {
+    values: &'a Ast,
     // env: HashMap<String, String>,
     // anchors: HashMap<String, Ast>,
 }
 
-impl RenderContext {
-    pub fn new(values: Ast) -> RenderContext {
+impl<'a> RenderContext<'a> {
+    pub fn new(values: &'a Ast) -> RenderContext {
         RenderContext {
             values,
         }
@@ -101,7 +101,7 @@ impl RenderContext {
         let scope_and_path = var_path.split_first();
         match scope_and_path {
             Some((scope, path)) if scope == "values" => {
-                let mut cur_node = &self.values;
+                let mut cur_node = self.values;
                 for p in path {
                     let map = match cur_node {
                         Ast::Map(pos, tag, map) => map,
@@ -140,7 +140,7 @@ pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, Error> {
         }
         Ast::Scalar(pos, tag, kind, val) => {
             let rendered_value = render_template(val, ctx)?;
-            Ast::Scalar(pos.clone(), clone_tag(tag), clone_scalar_kind(kind), val.clone())
+            Ast::Scalar(pos.clone(), clone_tag(tag), clone_scalar_kind(kind), rendered_value)
         }
         Ast::Null(pos, tag, kind) => {
             Ast::Null(pos.clone(), Tag::NonSpecific, NullKind::Explicit)
@@ -150,6 +150,7 @@ pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, Error> {
 }
 
 fn render_template(tmpl: &str, ctx: &RenderContext) -> Result<String, failure::Error> {
+//    dbg!(tmpl);
     use combine::Parser;
 
     let parse_res = template().parse(tmpl)
@@ -168,8 +169,12 @@ fn render_template(tmpl: &str, ctx: &RenderContext) -> Result<String, failure::E
         match p {
             TemplatePart::Gap(gap) => result.push_str(gap),
             TemplatePart::Subst(var_path) => {
+//                dbg!(var_path);
                 match ctx.resolve_value(var_path)? {
-                    Ast::Scalar(_, _, _, v) => result.push_str(&v),
+                    Ast::Scalar(_, _, _, v) => {
+//                        dbg!(&v);
+                        result.push_str(&v)
+                    },
                     _ => return Err(format_err!("Can render only scalar value")),
                 }
             }

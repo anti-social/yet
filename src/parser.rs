@@ -40,7 +40,7 @@ fn subst<I>() -> impl Parser<Input = I, Output = TemplatePart>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
-    between(string("${"), token('}'), var_path())
+    between(string("${{"), string("}}"), var_path())
          .map(|v| TemplatePart::Subst(v))
 }
 
@@ -131,11 +131,15 @@ mod tests {
             Err(StringStreamError::UnexpectedParse)
         );
         assert_eq!(
-            subst().parse("${a}"),
+            subst().parse("${{}}"),
+            Err(StringStreamError::UnexpectedParse)
+        );
+        assert_eq!(
+            subst().parse("${{a}}"),
             Ok((TemplatePart::Subst(vec!("a".to_string())), ""))
         );
         assert_eq!(
-            subst().parse("${a.b} "),
+            subst().parse("${{a.b}} "),
             Ok((TemplatePart::Subst(vec!("a".to_string(), "b".to_string())), " "))
         );
     }
@@ -151,8 +155,8 @@ mod tests {
             Ok((TemplatePart::Gap("123 ".to_string()), "$ "))
         );
         assert_eq!(
-            gap().parse("123 \\${} \\\\${}"),
-            Ok((TemplatePart::Gap("123 \\${} \\\\".to_string()), "${}"))
+            gap().parse("123 \\${{}} \\\\${{}}"),
+            Ok((TemplatePart::Gap("123 \\${{}} \\\\".to_string()), "${{}}"))
         );
     }
 
@@ -167,11 +171,11 @@ mod tests {
             Ok((vec![TemplatePart::Gap("abc".to_string())], ""))
         );
         assert_eq!(
-            template().parse("${abc}"),
+            template().parse("${{abc}}"),
             Ok((vec![TemplatePart::Subst(vec!["abc".to_string()])], ""))
         );
         assert_eq!(
-            template().parse("\\$${abc}: ${x.y.0}"),
+            template().parse("\\$${{abc}}: ${{x.y.0}}"),
             Ok((vec![
                 TemplatePart::Gap("\\$".to_string()),
                 TemplatePart::Subst(vec!["abc".to_string()]),
@@ -184,7 +188,7 @@ mod tests {
             Err(StringStreamError::Eoi)
         );
         assert_eq!(
-            template().parse("${"),
+            template().parse("${{"),
             Err(StringStreamError::UnexpectedParse)
         );
 

@@ -13,8 +13,8 @@ name = "yamplate-bin"
 path = "src/bin/main.rs"
 
 [dependencies]
-quire = "0.4.1"
-yaml-rust = "0.4.2"
+quire = { git = 'https://github.com/anti-social/rust-quire', rev="e45792c" }
+# yaml-rust = "0.4.2"
 combine = "3.6.6"
 serde = "1.0.85"
 serde_json = "1.0.37"
