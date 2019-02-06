@@ -1,15 +1,15 @@
 [package]
-name = "yamplate"
-version = "0.1.0"
+name = "yet"
+version = "0.0.1"
 authors = ["Alexander Koval <kovalidis@gmail.com>"]
 edition = "2018"
 
 [lib]
-name = "yamplate"
+name = "yet"
 path = "src/lib.rs"
 
 [[bin]]
-name = "yamplate-bin"
+name = "yet"
 path = "src/bin/main.rs"
 
 [dependencies]

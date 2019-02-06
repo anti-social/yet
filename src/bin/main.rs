@@ -7,7 +7,7 @@ use argparse::{ArgumentParser, Store, StoreOption};
 
 use quire::emit_ast;
 
-use yamplate::template::{parse_template, parse_values, render, RenderContext};
+use yet::template::{parse_template, parse_values, render, RenderContext};
 
 fn main() -> Result<(), failure::Error> {
     let mut template_path = PathBuf::new();

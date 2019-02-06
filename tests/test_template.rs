@@ -3,7 +3,7 @@ use std::path::Path;
 
 use quire::emit_ast;
 
-use yamplate::template::{parse_template, render, RenderContext};
+use yet::template::{parse_template, render, RenderContext};
 
 #[test]
 fn test_substitution() {
