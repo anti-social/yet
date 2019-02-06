@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use std::rc::Rc;
 
-use failure::{Error, format_err};
+use failure::format_err;
 use failure_derive::Fail;
 
 use quire::Pos;
@@ -11,8 +12,6 @@ use quire::ast::Ast;
 use quire::ast::NullKind;
 use quire::ast::ScalarKind;
 use quire::ast::Tag;
-
-use serde_json::{json, Value};
 
 use super::parser::template;
 use crate::parser::TemplatePart;
@@ -22,12 +21,6 @@ enum TemplatingError {
     #[fail(display = "template parsing error: {}", err)]
     ParseError { err: String }
 }
-
-//impl<Item, Range, Position> From<combine::ParseError<Item, Range, Posigion>> for TemplatingError {
-//    fn from(err: combine::ParseError<Item, Range, Posigion>) -> TemplatingError {
-//        TemplatingError::ParseError
-//    }
-//}
 
 fn clone_tag(tag: &Tag) -> Tag {
     match tag {
@@ -74,86 +67,143 @@ fn clone_ast(ast: &Ast) -> Ast {
     }
 }
 
-pub fn parse(fname: &str) -> Result<Vec<Ast>, quire::Error> {
+pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
     let ref mut content = String::new();
-    File::open(fname).unwrap().read_to_string(content);
+    File::open(fpath)?.read_to_string(content)?;
 
     let errors = quire::ErrorCollector::new();
-    quire::raw_parse_all(Rc::new(fname.to_string()), content, |doc| {
+    let fname = fpath.as_os_str().to_string_lossy().into_owned();
+    Ok(quire::raw_parse_all(Rc::new(fname), content, |doc| {
         quire::ast::process(&quire::Options::default(), doc, &errors)
     })
+        .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?)
+}
+
+pub fn parse_values(fpath: &Path) -> Result<Ast, failure::Error> {
+    let ref mut content = String::new();
+    File::open(fpath)?.read_to_string(content)?;
+
+    let errors = quire::ErrorCollector::new();
+    let fname = fpath.as_os_str().to_string_lossy().into_owned();
+    Ok(quire::raw_parse(Rc::new(fname), content, |doc| {
+        quire::ast::process(&quire::Options::default(), doc, &errors)
+    })
+        .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?)
+}
+
+struct TemplateScalar<'a> {
+    pub tmpl: &'a str,
+    pub pos: &'a Pos,
+    pub tag: &'a Tag,
+    pub kind: &'a ScalarKind,
+}
+
+impl<'a> TemplateScalar<'a> {
+    fn new(tmpl: &'a str, pos: &'a Pos, tag: &'a Tag, kind: &'a ScalarKind)
+        -> TemplateScalar<'a>
+    {
+        TemplateScalar {tmpl, pos, tag, kind}
+    }
 }
 
 pub struct RenderContext<'a> {
-    values: &'a Ast,
-    // env: HashMap<String, String>,
+    values: Option<&'a Ast>,
+    env: &'a HashMap<String, String>,
     // anchors: HashMap<String, Ast>,
 }
 
 impl<'a> RenderContext<'a> {
-    pub fn new(values: &'a Ast) -> RenderContext {
+    pub fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
         RenderContext {
-            values,
+            values, env
         }
     }
 
-    fn resolve_value(&self, var_path: &Vec<String>) -> Result<Ast, Error> {
+    fn resolve_value(&self, var_path: &Vec<String>) -> Result<Ast, failure::Error> {
         let scope_and_path = var_path.split_first();
-        match scope_and_path {
+        let value = match scope_and_path {
             Some((scope, path)) if scope == "values" => {
-                let mut cur_node = self.values;
+                let mut cur_node = self.values.ok_or(format_err!("Values scope is missing"))?;
                 for p in path {
                     let map = match cur_node {
-                        Ast::Map(pos, tag, map) => map,
+                        Ast::Map(_, _, map) => map,
                         _ => return Err(format_err!("Expected a mapping")),
                     };
                     let v = match map.get(p) {
                         Some(v) => v,
-                        None => return Err(format_err!("Missing key: {}", p)),
+                        None => return Err(format_err!("Missing key in values: {}", p)),
                     };
                     cur_node = v;
                 }
-                Ok(clone_ast(cur_node))
+                clone_ast(cur_node)
+            },
+            Some((scope, path)) if scope == "env" => {
+                let key = path.join(".");
+                match self.env.get(&key) {
+                    Some(v) => {
+                        let pos = Pos {
+                            filename: Rc::new("<env>".to_string()),
+                            indent: 0,
+                            line: 1,
+                            line_start: true,
+                            line_offset: 0,
+                            offset: 0,
+                        };
+                        Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Quoted, v.clone())
+                    },
+                    None => return Err(format_err!("Missing key in env: {}", key))
+                }
             },
             Some((s, _)) => return Err(format_err!("Unknown scope: {}", s)),
             None => return Err(format_err!("Empty variable path")),
-        }
+        };
+        Ok(value)
     }
 }
 
-pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, Error> {
+pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, failure::Error> {
     let rendered_ast = match ast {
         Ast::Map(pos, tag, map) => {
             let mut rendered_map = BTreeMap::new();
             for (k, v) in map {
-                rendered_map.insert(render_template(k, ctx)?, render(v, ctx)?);
+                let tmpl = TemplateScalar::new(
+                    k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
+                );
+                if let Ast::Scalar(_, _, _, rendered_key) = render_template(&tmpl, ctx)? {
+                    rendered_map.insert(
+                        rendered_key,
+                        render(v, ctx)?
+                    );
+                } else {
+                    return Err(format_err!("Only scalar type can be a map key"))
+                }
             }
             Ast::Map(pos.clone(), clone_tag(tag), rendered_map)
         }
         Ast::Seq(pos, tag, seq) => {
             let mut rendered_seq = Vec::with_capacity(seq.len());
             for a in seq {
-                let b =
                 rendered_seq.push(render(a, ctx)?);
             }
             Ast::Seq(pos.clone(), clone_tag(tag), rendered_seq)
         }
         Ast::Scalar(pos, tag, kind, val) => {
-            let rendered_value = render_template(val, ctx)?;
-            Ast::Scalar(pos.clone(), clone_tag(tag), clone_scalar_kind(kind), rendered_value)
+            let tmpl = TemplateScalar::new(val, pos, tag, kind);
+            render_template(&tmpl, ctx)?
         }
         Ast::Null(pos, tag, kind) => {
-            Ast::Null(pos.clone(), Tag::NonSpecific, NullKind::Explicit)
+            Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
         }
     };
     Ok(rendered_ast)
 }
 
-fn render_template(tmpl: &str, ctx: &RenderContext) -> Result<String, failure::Error> {
-//    dbg!(tmpl);
+fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
+    -> Result<Ast, failure::Error>
+{
     use combine::Parser;
 
-    let parse_res = template().parse(tmpl)
+    let parse_res = template().parse(tmpl.tmpl)
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?;
     let template_parts = match parse_res {
         (_, rest) if rest.len() > 0 => {
@@ -164,22 +214,42 @@ fn render_template(tmpl: &str, ctx: &RenderContext) -> Result<String, failure::E
         }
     };
 
-    let mut result = String::new();
+    // Single plain (non-quoted) substitution can be an Ast
+    // command: ${{values.cmd}}
+    match (tmpl.kind, template_parts.split_first()) {
+        (ScalarKind::Plain, Some((TemplatePart::Subst(var_path), rest)))
+        if rest.len() == 0 => {
+            return Ok(ctx.resolve_value(var_path)?);
+        }
+        _ => {}
+    }
+
+    let mut rendered_tmpl = String::new();
     for p in &template_parts {
         match p {
-            TemplatePart::Gap(gap) => result.push_str(gap),
+            TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
             TemplatePart::Subst(var_path) => {
-//                dbg!(var_path);
                 match ctx.resolve_value(var_path)? {
                     Ast::Scalar(_, _, _, v) => {
-//                        dbg!(&v);
-                        result.push_str(&v)
+                        rendered_tmpl.push_str(&v);
                     },
-                    _ => return Err(format_err!("Can render only scalar value")),
+                    Ast::Null(_, _, _) => {
+                        rendered_tmpl.push_str("null");
+                    },
+                    _ => {
+                        return Err(format_err!(
+                            "Can render into string only scalar value or null"
+                        ));
+                    },
                 }
             }
         }
     }
 
-    Ok(result)
+    Ok(Ast::Scalar(
+        tmpl.pos.clone(),
+        clone_tag(tmpl.tag),
+        clone_scalar_kind(tmpl.kind),
+        rendered_tmpl
+    ))
 }

@@ -1,17 +1,9 @@
-// use combine::*;
-use combine::{any, attempt, between, one_of, many1, not_followed_by, satisfy, sep_by1, token};
-use combine::parser::char::{char, alpha_num, digit, letter, string};
+use combine::{between, eof, one_of, many, many1, not_followed_by, satisfy, sep_by1, token};
+use combine::parser::char::{alpha_num, string};
 use combine::parser::combinator::recognize;
-use combine::skip_many1;
-use combine::skip_many;
-use combine::many;
-use combine::parser::choice::or;
 use combine::parser::range::take_while1;
-use combine::parser::repeat::{escaped, take_until};
+use combine::parser::repeat::escaped;
 use combine::{ParseError, Parser, Stream};
-use combine::look_ahead;
-use combine::eof;
-use combine::stream::state::State;
 
 #[derive(Debug, PartialEq)]
 pub enum TemplatePart {
@@ -64,8 +56,6 @@ pub fn template<I>() -> impl Parser<Input = I, Output = Vec<TemplatePart>>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
-//    let subst = subst();
-//    let gap = gap();
     many(
         subst().or(not_followed_by(eof().map(|_| "")).with(gap()))
     )
@@ -73,9 +63,8 @@ pub fn template<I>() -> impl Parser<Input = I, Output = Vec<TemplatePart>>
 
 #[cfg(test)]
 mod tests {
-    use combine::{Parser};
-    use combine::error::{StringStreamError};
-    use combine::stream::state::State;
+    use combine::Parser;
+    use combine::error::StringStreamError;
 
     use super::{TemplatePart, var_name, var_path, subst, gap, template};
 
@@ -191,11 +180,5 @@ mod tests {
             template().parse("${{"),
             Err(StringStreamError::UnexpectedParse)
         );
-
-//        let tmpl = "".to_string();
-//        assert_eq!(
-//            template().parse(&*tmpl),
-//            Ok((vec![], ""))
-//        );
     }
 }

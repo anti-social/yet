@@ -1,0 +1,4 @@
+---
+hash: ${{env.HASH}}
+---
+real-hash: ${{env.HASH}}
