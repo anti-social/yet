@@ -41,3 +41,15 @@ test:
   boolean: yes
   boolean_inside_string: Is active - yes
   suite: unit
+
+---
+str: |
+  Hello from
+  a multiline literal string!
+bool: yes
+---
+test:
+  string: "Hello from\na multiline literal string!\n"
+  boolean: yes
+  boolean_inside_string: Is active - yes
+  suite: unit
