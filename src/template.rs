@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::rc::Rc;
+use std::result;
 
-use failure::format_err;
+use failure::{self, format_err};
 use failure_derive::Fail;
 
 use quire::Pos;
@@ -15,6 +17,18 @@ use quire::ast::Tag;
 
 use super::parser::template;
 use crate::parser::TemplatePart;
+
+pub trait WithPathResultExt<T, E>: failure::ResultExt<T, E> where E: fmt::Display {
+    fn with_path<P: AsRef<Path>>(self, path: P)
+        -> result::Result<T, failure::Context<String>>
+        where Self: Sized
+    {
+        self.with_context(|e| format!("{}: {}", e, path.as_ref().display()))
+    }
+}
+
+impl<T, E: fmt::Display> WithPathResultExt<T, E> for result::Result<T, E>
+    where result::Result<T, E>: failure::ResultExt<T, E> {}
 
 #[derive(Debug, Fail)]
 enum TemplatingError {
@@ -69,11 +83,11 @@ fn clone_ast(ast: &Ast) -> Ast {
 
 pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
     let ref mut content = String::new();
-    File::open(fpath)?.read_to_string(content)?;
+    File::open(fpath).with_path(fpath)?
+        .read_to_string(content).with_path(fpath)?;
 
     let errors = quire::ErrorCollector::new();
-    let fname = fpath.as_os_str().to_string_lossy().into_owned();
-    Ok(quire::raw_parse_all(Rc::new(fname), content, |doc| {
+    Ok(quire::raw_parse_all(Rc::new(fpath.display().to_string()), content, |doc| {
         quire::ast::process(&quire::Options::default(), doc, &errors)
     })
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?)
@@ -81,7 +95,8 @@ pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
 
 pub fn parse_values(fpath: &Path) -> Result<Ast, failure::Error> {
     let ref mut content = String::new();
-    File::open(fpath)?.read_to_string(content)?;
+    File::open(fpath).with_path(fpath)?
+        .read_to_string(content).with_path(fpath)?;
 
     let errors = quire::ErrorCollector::new();
     let fname = fpath.as_os_str().to_string_lossy().into_owned();
