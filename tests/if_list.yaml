@@ -6,14 +6,14 @@ commands:
   # Do we really need a substitution syntax there?
   # Maybe next is fine too:
   # condition: values.with-run
-  condition: ${values.with-run}
+  condition: ${{values.with-run}}
   then: [run]
 
 tests:
   all:
   - !*If
     # TODO: Support for expressions: ${values.tests-type == integ}
-    condition: ${values.is-integ-tests}
+    condition: ${{values.is-integ-tests}}
     then:
     - integ1
     - integ2

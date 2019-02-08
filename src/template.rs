@@ -18,6 +18,18 @@ use quire::ast::Tag;
 use super::parser::template;
 use crate::parser::TemplatePart;
 
+static BOOL_TRUE_VALUES: &[&str] = &[
+    "true", "TRUE", "True",
+    "y", "Y", "yes", "YES", "Yes",
+    "on", "ON", "On",
+];
+
+static BOOL_FALSE_VALUES: &[&str] = &[
+    "false", "FALSE", "False",
+    "n", "N", "no", "NO", "No",
+    "off", "OFF", "Off",
+];
+
 pub trait WithPathResultExt<T, E>: failure::ResultExt<T, E> where E: fmt::Display {
     fn with_path<P: AsRef<Path>>(self, path: P)
         -> result::Result<T, failure::Context<String>>
@@ -176,38 +188,136 @@ impl<'a> RenderContext<'a> {
     }
 }
 
+fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
+    let pos = Pos {
+        filename: Rc::new("<expr>".to_string()),
+        indent: 0,
+        line: 1,
+        line_start: true,
+        line_offset: 0,
+        offset: 0,
+    };
+    match data.get(key) {
+        Some(value) => clone_ast(value),
+        None => Ast::Null(
+            pos, Tag::NonSpecific, NullKind::Implicit
+        ),
+    }
+}
+
+fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, failure::Error> {
+    let resolved_ast = match data.get("condition") {
+        Some(Ast::Scalar(pos, tag, kind, cond)) => {
+            dbg!(cond);
+            let rendered_cond = render_template(
+                &TemplateScalar::new(cond, pos, tag, kind), ctx
+            )?;
+            match rendered_cond {
+                Ast::Scalar(_, _, _, cond_value) => {
+                    dbg!(&cond_value);
+                    if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
+                        resolve_branch(data, "then")
+                    } else if BOOL_FALSE_VALUES.contains(&cond_value.as_str()) {
+                        resolve_branch(data, "else")
+                    } else {
+                        return Err(format_err!(
+                            "`!*If` condition resolved to non-boolean value: {}", &cond_value
+                        ));
+                    }
+                },
+                _ => return Err(format_err!("`!*If` condition must be resolved into scalar")),
+            }
+        },
+        Some(_) => return Err(format_err!("`!*If` condition must be a scalar")),
+        None => return Err(format_err!("`!*If` must contain `condition` key")),
+    };
+    dbg!(&resolved_ast);
+    Ok(resolved_ast)
+}
+
+fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
+    -> Result<Ast, failure::Error>
+{
+    let mut rendered_map = BTreeMap::new();
+    for (k, v) in map {
+        let tmpl = TemplateScalar::new(
+            k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
+        );
+        if let Ast::Scalar(_, _, _, rendered_key) = render_template(&tmpl, ctx)? {
+            match render_with_merge(v, ctx)? {
+                Rendered::Plain(rendered_value) => {
+                    rendered_map.insert(rendered_key, rendered_value);
+                },
+                Rendered::Merge(Ast::Map(p, t, m)) => {
+                    for (k, v) in m {
+                        rendered_map.insert(k, v);
+                    }
+                },
+                _ => return Err(format_err!(
+                                    "Cannot merge rendered value into map"
+                                )),
+            };
+        } else {
+            return Err(format_err!("Only scalar type can be a map key"))
+        }
+    }
+    Ok(Ast::Map(pos.clone(), clone_tag(tag), rendered_map))
+}
+
+fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
+    -> Result<Ast, failure::Error>
+{
+    let mut rendered_seq = Vec::with_capacity(seq.len());
+    for a in seq {
+        match render_with_merge(a, ctx)? {
+            Rendered::Plain(v) => rendered_seq.push(v),
+            Rendered::Merge(Ast::Seq(p, t, s)) => {
+                for v in s {
+                    rendered_seq.push(v);
+                }
+            },
+            _ => return Err(format_err!("Cannot merge rendered value into sequence")),
+        }
+    }
+    Ok(Ast::Seq(pos.clone(), clone_tag(tag), rendered_seq))
+}
+
+enum Rendered {
+    Plain(Ast),
+    Merge(Ast),
+}
+
 pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, failure::Error> {
+    match render_with_merge(ast, ctx)? {
+        Rendered::Plain(a) => Ok(a),
+        Rendered::Merge(a) => return Err(format_err!("Invalid state")),
+    }
+}
+
+fn render_with_merge(ast: &Ast, ctx: &RenderContext) -> Result<Rendered, failure::Error> {
     let rendered_ast = match ast {
         Ast::Map(pos, tag, map) => {
-            let mut rendered_map = BTreeMap::new();
-            for (k, v) in map {
-                let tmpl = TemplateScalar::new(
-                    k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
-                );
-                if let Ast::Scalar(_, _, _, rendered_key) = render_template(&tmpl, ctx)? {
-                    rendered_map.insert(
-                        rendered_key,
-                        render(v, ctx)?
-                    );
-                } else {
-                    return Err(format_err!("Only scalar type can be a map key"))
+            dbg!(tag);
+            match tag {
+                Tag::LocalTag(t) if t == "*If" => {
+                    Rendered::Merge(process_if(ctx, map)?)
+                }
+                _ => {
+                    Rendered::Plain(process_map(ctx, map, pos, tag)?)
                 }
             }
-            Ast::Map(pos.clone(), clone_tag(tag), rendered_map)
         }
         Ast::Seq(pos, tag, seq) => {
-            let mut rendered_seq = Vec::with_capacity(seq.len());
-            for a in seq {
-                rendered_seq.push(render(a, ctx)?);
-            }
-            Ast::Seq(pos.clone(), clone_tag(tag), rendered_seq)
+            Rendered::Plain(process_seq(ctx, seq, pos, tag)?)
         }
         Ast::Scalar(pos, tag, kind, val) => {
             let tmpl = TemplateScalar::new(val, pos, tag, kind);
-            render_template(&tmpl, ctx)?
+            Rendered::Plain(render_template(&tmpl, ctx)?)
         }
         Ast::Null(pos, tag, kind) => {
-            Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
+            Rendered::Plain(
+                Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
+            )
         }
     };
     Ok(rendered_ast)
