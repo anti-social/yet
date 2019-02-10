@@ -15,7 +15,7 @@ use quire::ast::NullKind;
 use quire::ast::ScalarKind;
 use quire::ast::Tag;
 
-use super::parser::template;
+use crate::parser::template;
 use crate::parser::TemplatePart;
 
 static BOOL_TRUE_VALUES: &[&str] = &[
@@ -208,17 +208,15 @@ fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
 fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, failure::Error> {
     let resolved_ast = match data.get("condition") {
         Some(Ast::Scalar(pos, tag, kind, cond)) => {
-            dbg!(cond);
             let rendered_cond = render_template(
                 &TemplateScalar::new(cond, pos, tag, kind), ctx
             )?;
             match rendered_cond {
                 Ast::Scalar(_, _, _, cond_value) => {
-                    dbg!(&cond_value);
                     if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
                         resolve_branch(data, "then")
                     } else if BOOL_FALSE_VALUES.contains(&cond_value.as_str()) {
-                        dbg!(resolve_branch(data, "else"))
+                        resolve_branch(data, "else")
                     } else {
                         return Err(format_err!(
                             "`!*If` condition resolved to non-boolean value: {}", &cond_value
@@ -231,7 +229,6 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, 
         Some(_) => return Err(format_err!("`!*If` condition must be a scalar")),
         None => return Err(format_err!("`!*If` must contain `condition` key")),
     };
-    dbg!(&resolved_ast);
     Ok(resolved_ast)
 }
 
@@ -298,7 +295,6 @@ fn render_with_merge(ast: &Ast, ctx: &RenderContext)
 {
     let rendered_ast = match ast {
         Ast::Map(pos, tag, map) => {
-            dbg!(tag);
             match tag {
                 Tag::LocalTag(t) if t == "*If" => {
                     Rendered::Merge(process_if(ctx, map)?)

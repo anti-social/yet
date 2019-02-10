@@ -1,68 +1,113 @@
 use std::collections::HashMap;
+use std::fs::read_dir;
 use std::path::Path;
 
+use failure::format_err;
+
+use quire::ast::Ast;
 use quire::emit_ast;
 
 use yet::template::{parse_template, render, RenderContext};
 
-fn test_file<P: AsRef<Path>>(test_file_path: P, env_vars: &HashMap<String, String>) {
-    let tmpl_and_test_data = parse_template(test_file_path.as_ref()).unwrap();
+fn env_vars_from_ast(env: Option<&Ast>)
+    -> Result<HashMap<String, String>, failure::Error>
+{
+    let mut env_vars = HashMap::new();
+    match env {
+        None => {},
+        Some(Ast::Map(.., map)) => {
+            for (key, val) in map {
+                match val {
+                    Ast::Scalar(.., v) => env_vars.insert(key.clone(), v.clone()),
+                    _ => return Err(format_err!("Env value must be a scalar")),
+                };
+            }
+        },
+        _ => return Err(format_err!("Env must be a map")),
+    }
+    Ok(env_vars)
+}
+
+fn test_file<P: AsRef<Path>>(test_file_path: P)
+    -> Result<(), failure::Error>
+{
+    let tmpl_and_test_data = parse_template(test_file_path.as_ref())?;
     let (tmpl, test_data) = tmpl_and_test_data.split_first().unwrap();
 
-    for values_and_output in test_data.iter().collect::<Vec<_>>().chunks(2) {
-        let values = Some(*values_and_output.get(0).unwrap());
-        let expected_ast = values_and_output.get(1).unwrap();
+    for test_case in test_data.iter() {
+        let (env, values, result) = match test_case {
+            Ast::Map(.., map) => {
+                (
+                    map.get("env"),
+                    map.get("values"),
+                    match map.get("result") {
+                        Some(Ast::Map(.., res)) => res,
+                        None => return Err(format_err!("`result` is mandatory")),
+                        _ => return Err(format_err!("`result` must be a map")),
+                    }
+                )
+            },
+            _ => return Err(format_err!("Expected a map")),
+        };
+
+        let env_vars = env_vars_from_ast(env)?;
         let ctx = RenderContext::new(values, &env_vars);
-        let rendered_ast = render(tmpl, &ctx).unwrap();
-        dbg!(&rendered_ast);
+        let render_result = render(tmpl, &ctx);
 
-        let mut buf = Vec::<u8>::new();
-        emit_ast(&rendered_ast, &mut buf).unwrap();
-        let output = String::from(std::str::from_utf8(&buf).unwrap());
-        buf.clear();
-        emit_ast(&expected_ast, &mut buf).unwrap();
-        let expected_output = String::from(std::str::from_utf8(&buf).unwrap());
+        if let Some(ok_res) = result.get("ok") {
+            let rendered_ast = render_result?;
+            let mut buf = Vec::<u8>::new();
+            emit_ast(&rendered_ast, &mut buf)?;
+            let output = String::from(std::str::from_utf8(&buf)?);
+            buf.clear();
+            emit_ast(&ok_res, &mut buf)?;
+            let expected_output = String::from(std::str::from_utf8(&buf)?);
 
-        assert_eq!(
-            output,
-            expected_output
-        );
+            assert_eq!(
+                output,
+                expected_output
+            );
+        } else if let Some(err_res) = result.get("err") {
+            let expected_msg = match err_res {
+                Ast::Map(.., err_map) => {
+                    match err_map.get("msg") {
+                        Some(Ast::Scalar(.., err_msg)) => err_msg,
+                        None => return Err(format_err!("Missing `result.err.msg`")),
+                        _ => return Err(format_err!("`result.err.msg` must be a scalar")),
+                    }
+                },
+                _ => return Err(format_err!("`result.err` must be a map")),
+            };
+            match render_result {
+                Ok(_) => return Err(format_err!("Expected error")),
+                Err(e) => {
+                    assert_eq!(
+                        &format!("{}", e),
+                        expected_msg
+                    );
+                }
+            }
+        } else {
+            return Err(format_err!(
+                "Result must contain `ok` or `err` key"
+            ))
+        }
+
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_substitution() {
-    let tmpl_and_test_data = parse_template(Path::new("tests/substitute_vars.yaml")).unwrap();
-    let (tmpl, test_data) = tmpl_and_test_data.split_first().unwrap();
-    let mut env_vars = HashMap::<String, String>::new();
-    env_vars.insert("TEST_SUITE".to_string(), "unit".to_string());
+fn test_all_from_data() -> Result<(), failure::Error> {
+    for entry in read_dir("tests/data")? {
+        let test_file_path = entry?.path();
+        if !test_file_path.is_file() { continue }
 
-    for values_and_output in test_data.iter().collect::<Vec<_>>().chunks(2) {
-        let values = Some(*values_and_output.get(0).unwrap());
-        let expected_ast = values_and_output.get(1).unwrap();
-        let ctx = RenderContext::new(values, &env_vars);
-        let rendered_ast = render(tmpl, &ctx).unwrap();
-
-        let mut buf = Vec::<u8>::new();
-        emit_ast(&rendered_ast, &mut buf).unwrap();
-        let output = String::from(std::str::from_utf8(&buf).unwrap());
-        buf.clear();
-        emit_ast(&expected_ast, &mut buf).unwrap();
-        let expected_output = String::from(std::str::from_utf8(&buf).unwrap());
-
-        assert_eq!(
-            output,
-            expected_output
-        );
+        test_file(test_file_path)?;
     }
 
-//    assert_eq!(1, 2);
-}
+//    assert!(false);
 
-#[test]
-fn test_if() {
-    let env_vars = HashMap::<String, String>::new();
-    test_file("tests/if_list.yaml", &env_vars);
-
-//    assert_eq!(1, 2);
+    Ok(())
 }

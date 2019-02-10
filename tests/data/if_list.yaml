@@ -22,28 +22,28 @@ tests:
     - unit2
 
 ---
-# Values
-with-run: true
-is-integ-tests: false
----
-# Result
-commands:
-- test
-- run
-tests:
-  all:
-  - unit1
-  - unit2
+values:
+  with-run: true
+  is-integ-tests: false
+result:
+  ok:
+    commands:
+    - test
+    - run
+    tests:
+      all:
+      - unit1
+      - unit2
 
 ---
-# Values
-with-run: false
-is-integ-tests: true
----
-# Result
-commands:
-- test
-tests:
-  all:
-  - integ1
-  - integ2
+values:
+  with-run: false
+  is-integ-tests: true
+result:
+  ok:
+    commands:
+    - test
+    tests:
+      all:
+      - integ1
+      - integ2
