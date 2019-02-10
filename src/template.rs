@@ -218,7 +218,7 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, 
                     if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
                         resolve_branch(data, "then")
                     } else if BOOL_FALSE_VALUES.contains(&cond_value.as_str()) {
-                        resolve_branch(data, "else")
+                        dbg!(resolve_branch(data, "else"))
                     } else {
                         return Err(format_err!(
                             "`!*If` condition resolved to non-boolean value: {}", &cond_value
@@ -248,10 +248,8 @@ fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag:
                 Rendered::Plain(rendered_value) => {
                     rendered_map.insert(rendered_key, rendered_value);
                 },
-                Rendered::Merge(Ast::Map(p, t, m)) => {
-                    for (k, v) in m {
-                        rendered_map.insert(k, v);
-                    }
+                Rendered::Merge(Ast::Map(.., m)) => {
+                    rendered_map.extend(m);
                 },
                 _ => return Err(format_err!(
                                     "Cannot merge rendered value into map"
@@ -271,11 +269,10 @@ fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
     for a in seq {
         match render_with_merge(a, ctx)? {
             Rendered::Plain(v) => rendered_seq.push(v),
-            Rendered::Merge(Ast::Seq(p, t, s)) => {
-                for v in s {
-                    rendered_seq.push(v);
-                }
+            Rendered::Merge(Ast::Seq(.., s)) => {
+                rendered_seq.extend(s);
             },
+            Rendered::Merge(Ast::Null(..)) => {}
             _ => return Err(format_err!("Cannot merge rendered value into sequence")),
         }
     }
@@ -290,11 +287,15 @@ enum Rendered {
 pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, failure::Error> {
     match render_with_merge(ast, ctx)? {
         Rendered::Plain(a) => Ok(a),
-        Rendered::Merge(a) => return Err(format_err!("Invalid state")),
+        Rendered::Merge(_) => return Err(format_err!(
+            "Cannot merge rendered node into root"
+        )),
     }
 }
 
-fn render_with_merge(ast: &Ast, ctx: &RenderContext) -> Result<Rendered, failure::Error> {
+fn render_with_merge(ast: &Ast, ctx: &RenderContext)
+    -> Result<Rendered, failure::Error>
+{
     let rendered_ast = match ast {
         Ast::Map(pos, tag, map) => {
             dbg!(tag);

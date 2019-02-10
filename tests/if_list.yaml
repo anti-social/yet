@@ -34,3 +34,16 @@ tests:
   all:
   - unit1
   - unit2
+
+---
+# Values
+with-run: false
+is-integ-tests: true
+---
+# Result
+commands:
+- test
+tests:
+  all:
+  - integ1
+  - integ2
