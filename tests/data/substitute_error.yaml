@@ -1,0 +1,19 @@
+---
+test:
+  some: ${{values.some}}
+  suite: ${{env.TEST_SUITE}}
+
+---
+values:
+  some: Awesome!
+result:
+  err:
+    msg: "Missing key in env: TEST_SUITE"
+
+---
+values: {}
+env:
+  suite: unit
+result:
+  err:
+    msg: "Missing key in values: some"

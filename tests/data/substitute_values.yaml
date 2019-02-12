@@ -1,0 +1,46 @@
+---
+test:
+  some: ${{values.some}}
+
+---
+# String
+values:
+  some: Hello
+result:
+  ok:
+    test:
+      some: Hello
+
+---
+values:
+  some:
+  - Hi there!
+  - I'm a list now!
+result:
+  ok:
+    test:
+      some:
+      - Hi there!
+      - I'm a list now!
+
+---
+values:
+  some: |
+    Hello from
+    a multiline literal string!
+result:
+  ok:
+    test:
+      some: "Hello from\na multiline literal string!\n"
+
+---
+values:
+  some:
+    name: Bean
+    title: Mr.
+result:
+  ok:
+    test:
+      some:
+        name: Bean
+        title: Mr.

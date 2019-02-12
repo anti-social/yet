@@ -1,0 +1,20 @@
+---
+test:
+  text: Hello, ${{values.title}} ${{values.name}}!
+
+---
+values:
+  name: Bean
+  title: Mr.
+result:
+  ok:
+    test:
+      text: Hello, Mr. Bean!
+
+---
+values:
+  name: Bean
+  title: [Mr., Sir]
+result:
+  err:
+    msg: Can render into string only scalar value or null

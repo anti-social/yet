@@ -99,10 +99,11 @@ pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
         .read_to_string(content).with_path(fpath)?;
 
     let errors = quire::ErrorCollector::new();
-    Ok(quire::raw_parse_all(Rc::new(fpath.display().to_string()), content, |doc| {
+    Ok(vec![quire::raw_parse(Rc::new(fpath.display().to_string()), content, |doc| {
         quire::ast::process(&quire::Options::default(), doc, &errors)
     })
-        .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?)
+        .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?
+    ])
 }
 
 pub fn parse_values(fpath: &Path) -> Result<Ast, failure::Error> {
@@ -245,12 +246,12 @@ fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag:
                 Rendered::Plain(rendered_value) => {
                     rendered_map.insert(rendered_key, rendered_value);
                 },
-                Rendered::Merge(Ast::Map(.., m)) => {
+                Rendered::Unpack(Ast::Map(.., m)) => {
                     rendered_map.extend(m);
                 },
                 _ => return Err(format_err!(
-                                    "Cannot merge rendered value into map"
-                                )),
+                    "Cannot merge rendered value into map"
+                )),
             };
         } else {
             return Err(format_err!("Only scalar type can be a map key"))
@@ -266,10 +267,10 @@ fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
     for a in seq {
         match render_with_merge(a, ctx)? {
             Rendered::Plain(v) => rendered_seq.push(v),
-            Rendered::Merge(Ast::Seq(.., s)) => {
+            Rendered::Unpack(Ast::Seq(.., s)) => {
                 rendered_seq.extend(s);
             },
-            Rendered::Merge(Ast::Null(..)) => {}
+            Rendered::Unpack(Ast::Null(..)) => {}
             _ => return Err(format_err!("Cannot merge rendered value into sequence")),
         }
     }
@@ -278,14 +279,14 @@ fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
 
 enum Rendered {
     Plain(Ast),
-    Merge(Ast),
+    Unpack(Ast),
 }
 
 pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, failure::Error> {
     match render_with_merge(ast, ctx)? {
         Rendered::Plain(a) => Ok(a),
-        Rendered::Merge(_) => return Err(format_err!(
-            "Cannot merge rendered node into root"
+        Rendered::Unpack(_) => return Err(format_err!(
+            "Cannot unpack rendered node into root"
         )),
     }
 }
@@ -297,7 +298,7 @@ fn render_with_merge(ast: &Ast, ctx: &RenderContext)
         Ast::Map(pos, tag, map) => {
             match tag {
                 Tag::LocalTag(t) if t == "*If" => {
-                    Rendered::Merge(process_if(ctx, map)?)
+                    Rendered::Plain(process_if(ctx, map)?)
                 }
                 _ => {
                     Rendered::Plain(process_map(ctx, map, pos, tag)?)
