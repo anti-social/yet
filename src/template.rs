@@ -99,11 +99,16 @@ pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
         .read_to_string(content).with_path(fpath)?;
 
     let errors = quire::ErrorCollector::new();
-    Ok(vec![quire::raw_parse(Rc::new(fpath.display().to_string()), content, |doc| {
-        quire::ast::process(&quire::Options::default(), doc, &errors)
-    })
-        .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?
-    ])
+    Ok(
+        quire::raw_parse_all(
+            Rc::new(fpath.display().to_string()),
+            content,
+            |doc| {
+                quire::ast::process(&quire::Options::default(), doc, &errors)
+            }
+        )
+            .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?
+    )
 }
 
 pub fn parse_values(fpath: &Path) -> Result<Ast, failure::Error> {
@@ -152,14 +157,19 @@ impl<'a> RenderContext<'a> {
         let value = match scope_and_path {
             Some((scope, path)) if scope == "values" => {
                 let mut cur_node = self.values.ok_or(format_err!("Values scope is missing"))?;
+                let mut cur_path = scope.clone();
                 for p in path {
+                    cur_path.push_str(&format!(".{}", p));
                     let map = match cur_node {
                         Ast::Map(_, _, map) => map,
-                        _ => return Err(format_err!("Expected a mapping")),
+                        _ => return Err(format_err!("Expected a mapping: {}", var_path.join("."))),
                     };
                     let v = match map.get(p) {
                         Some(v) => v,
-                        None => return Err(format_err!("Missing key in values: {}", p)),
+                        None => {
+                            dbg!(cur_node);
+                            return Err(format_err!("Missing key: {}", cur_path));
+                        },
                     };
                     cur_node = v;
                 }
@@ -179,7 +189,7 @@ impl<'a> RenderContext<'a> {
                         };
                         Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Quoted, v.clone())
                     },
-                    None => return Err(format_err!("Missing key in env: {}", key))
+                    None => return Err(format_err!("Missing key: env.{}", key))
                 }
             },
             Some((s, _)) => return Err(format_err!("Unknown scope: {}", s)),
@@ -206,7 +216,7 @@ fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
     }
 }
 
-fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, failure::Error> {
+fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Rendered, failure::Error> {
     let resolved_ast = match data.get("condition") {
         Some(Ast::Scalar(pos, tag, kind, cond)) => {
             let rendered_cond = render_template(
@@ -214,7 +224,7 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, 
             )?;
             match rendered_cond {
                 Ast::Scalar(_, _, _, cond_value) => {
-                    if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
+                    let branch_ast = if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
                         resolve_branch(data, "then")
                     } else if BOOL_FALSE_VALUES.contains(&cond_value.as_str()) {
                         resolve_branch(data, "else")
@@ -222,7 +232,8 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Ast, 
                         return Err(format_err!(
                             "`!*If` condition resolved to non-boolean value: {}", &cond_value
                         ));
-                    }
+                    };
+                    render_with_merge(&branch_ast, ctx)?
                 },
                 _ => return Err(format_err!("`!*If` condition must be resolved into scalar")),
             }
@@ -298,7 +309,7 @@ fn render_with_merge(ast: &Ast, ctx: &RenderContext)
         Ast::Map(pos, tag, map) => {
             match tag {
                 Tag::LocalTag(t) if t == "*If" => {
-                    Rendered::Plain(process_if(ctx, map)?)
+                    process_if(ctx, map)?
                 }
                 _ => {
                     Rendered::Plain(process_map(ctx, map, pos, tag)?)

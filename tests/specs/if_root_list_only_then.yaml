@@ -1,0 +1,20 @@
+---
+!*If
+condition: ${{values.condition}}
+then:
+- 1
+- 2
+
+---
+values:
+  condition: true
+result:
+  ok:
+  - 1
+  - 2
+
+---
+values:
+  condition: false
+result:
+  ok:

@@ -13,8 +13,8 @@ name = "yet"
 path = "src/bin/main.rs"
 
 [dependencies]
-quire = "0.4.1"
-# quire = { git = 'https://github.com/anti-social/rust-quire', rev="cc664c9" }
+# quire = "0.4.1"
+quire = { git = 'https://github.com/anti-social/rust-quire', rev="d5bc58d" }
 # quire = { path = "../rust-quire" }
 combine = "3.6.6"
 failure = "0.1.5"
