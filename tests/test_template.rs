@@ -99,8 +99,8 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
 }
 
 #[test]
-fn test_all_from_data() -> Result<(), failure::Error> {
-    for entry in read_dir("tests/data")? {
+fn test_all_specs() -> Result<(), failure::Error> {
+    for entry in read_dir("tests/specs")? {
         let test_file_path = entry?.path();
         if !test_file_path.is_file() { continue }
 

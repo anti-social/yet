@@ -1,5 +1,5 @@
 ---
 hash: ${{env.HASH}}
-data: ${{values.data}}
+data: ${{values.specs}}
 ---
 real-hash: ${{env.HASH}}

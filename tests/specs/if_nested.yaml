@@ -1,0 +1,38 @@
+---
+!*If
+condition: ${{values.cond-1}}
+then:
+  a: !*If
+    condition: ${{values.cond-2}}
+    then: 1
+    else: 2
+else:
+  b: !*If
+    condition: ${{values.cond-2}}
+    then: [3, 4]
+
+---
+values:
+  cond-1: true
+  cond-2: true
+result:
+  ok:
+    a: 1
+
+---
+values:
+  cond-1: false
+  cond-2: true
+result:
+  ok:
+    b:
+    - 3
+    - 4
+
+---
+values:
+  cond-1: false
+  cond-2: false
+result:
+  ok:
+    b:

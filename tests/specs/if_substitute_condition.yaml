@@ -1,0 +1,28 @@
+---
+commands: !*If
+  condition: ${{values.with-tests}}
+  then: ${{values.test-commands}}
+  else:
+  - build
+
+---
+values:
+  with-tests: true
+  test-commands:
+  - build
+  - unit
+  - integ
+result:
+  ok:
+    commands:
+    - build
+    - unit
+    - integ
+
+---
+values:
+  with-tests: false
+result:
+  ok:
+    commands:
+    - build

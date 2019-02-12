@@ -1,0 +1,29 @@
+---
+a:
+- build
+- !*If
+  condition: ${{values.condition}}
+  then:
+  - test
+b:
+
+---
+values:
+  condition: true
+result:
+  ok:
+    a:
+    - build
+    -
+      - test
+    b:
+
+---
+values:
+  condition: false
+result:
+  ok:
+    a:
+    - build
+    -
+    b:
