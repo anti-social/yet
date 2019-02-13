@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs::File;
@@ -146,21 +147,21 @@ struct RenderContext<'a> {
     values: Option<&'a Ast>,
     env: &'a HashMap<String, String>,
     // anchors: HashMap<String, Ast>,
-    scopes_stack: Vec<HashMap<String, Ast>>,
+    scopes_stack: RefCell<Vec<HashMap<String, Ast>>>,
 }
 
-//struct ScopeGuard(Vec<HashMap<String, Ast>>);
-//
-//impl Drop for ScopeGuard {
-//    fn drop(&mut self) {
-//        self.0.pop();
-//    }
-//}
+struct ScopesGuard<'a>(&'a RefCell<Vec<HashMap<String, Ast>>>);
+
+impl<'a> Drop for ScopesGuard<'a> {
+    fn drop(&mut self) {
+        self.0.borrow_mut().pop();
+    }
+}
 
 impl<'a> RenderContext<'a> {
     fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
         RenderContext {
-            values, env, scopes_stack: vec!()
+            values, env, scopes_stack: RefCell::new(vec!())
         }
     }
 
@@ -168,12 +169,9 @@ impl<'a> RenderContext<'a> {
         self.values.ok_or(format_err!("Values scope is missing"))
     }
 
-    fn push_scopes(&mut self, scopes: HashMap<String, Ast>) {
-        self.scopes_stack.push(scopes);
-    }
-
-    fn pop_scopes(&mut self) {
-        self.scopes_stack.pop();
+    fn push_scopes(&self, scopes: HashMap<String, Ast>) -> ScopesGuard {
+        self.scopes_stack.borrow_mut().push(scopes);
+        ScopesGuard(&self.scopes_stack)
     }
 
     fn resolve_value(&self, var_path: &Vec<String>) -> Result<Ast, failure::Error> {
@@ -202,17 +200,19 @@ impl<'a> RenderContext<'a> {
             },
             Some((scope, path)) => {
                 let mut found_ast = None;
-                for scopes_frame in self.scopes_stack.iter().rev() {
+                for scopes_frame in self.scopes_stack.borrow().iter().rev() {
                     match scopes_frame.get(scope) {
                         Some(scope_ast) => {
-                            found_ast = Some(follow_ast(scope_ast, path, scope)?);
+                            found_ast = Some(clone_ast(
+                                follow_ast(scope_ast, path, scope)?
+                            ));
                             break;
                         }
                         None => continue
                     }
                 }
                 if let Some(var_ast) = found_ast {
-                    clone_ast(var_ast)
+                    var_ast
                 } else {
                     return Err(format_err!("Unknown scope: {}", scope));
                 }
@@ -223,7 +223,7 @@ impl<'a> RenderContext<'a> {
     }
 
 
-    fn render(&mut self, ast: &Ast) -> Result<Rendered, failure::Error> {
+    fn render(&self, ast: &Ast) -> Result<Rendered, failure::Error> {
         let rendered_ast = match ast {
             Ast::Map(pos, tag, map) => {
                 match tag {
@@ -293,7 +293,7 @@ fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
     }
 }
 
-fn process_if(ctx: &mut RenderContext, data: &BTreeMap<String, Ast>)
+fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>)
     -> Result<Rendered, failure::Error>
 {
     let resolved_ast = match data.get("condition") {
@@ -323,7 +323,7 @@ fn process_if(ctx: &mut RenderContext, data: &BTreeMap<String, Ast>)
     Ok(resolved_ast)
 }
 
-fn process_each(ctx: &mut RenderContext, each: &BTreeMap<String, Ast>)
+fn process_each(ctx: &RenderContext, each: &BTreeMap<String, Ast>)
     -> Result<Rendered, failure::Error>
 {
     let items_ast = match each.get("items") {
@@ -346,7 +346,7 @@ fn process_each(ctx: &mut RenderContext, each: &BTreeMap<String, Ast>)
     for item in items {
         let mut scopes = HashMap::new();
         scopes.insert("item".to_string(), item);
-        ctx.push_scopes(scopes);
+        let scopes_guard = ctx.push_scopes(scopes);
         match ctx.render(&loop_ast)? {
             Rendered::Plain(Ast::Seq(pos, _, seq)) => {
                 match result_ast {
@@ -376,7 +376,6 @@ fn process_each(ctx: &mut RenderContext, each: &BTreeMap<String, Ast>)
             }
             _ => return Err(format_err!("Result of a loop cannot be a scalar")),
         }
-        ctx.pop_scopes();
     }
 
     Ok(Rendered::Plain(
@@ -404,7 +403,7 @@ fn process_scalar(
     )
 }
 
-fn process_map(ctx: &mut RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
+fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
     -> Result<Ast, failure::Error>
 {
     let mut rendered_map = BTreeMap::new();
@@ -431,7 +430,7 @@ fn process_map(ctx: &mut RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, 
     Ok(Ast::Map(pos.clone(), clone_tag(tag), rendered_map))
 }
 
-fn process_seq(ctx: &mut RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
+fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
     -> Result<Ast, failure::Error>
 {
     let mut rendered_seq = Vec::with_capacity(seq.len());
@@ -456,7 +455,7 @@ enum Rendered {
 pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
     -> Result<Ast, failure::Error>
 {
-    let mut ctx = RenderContext::new(values, env);
+    let ctx = RenderContext::new(values, env);
     match ctx.render(ast)? {
         Rendered::Plain(a) => Ok(a),
         Rendered::Unpack(_) => return Err(format_err!(
