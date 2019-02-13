@@ -56,7 +56,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
         if let Some(ok_res) = result.get("ok") {
             let rendered_ast = render_result?;
             let mut buf = Vec::<u8>::new();
-            emit_ast(&rendered_ast, &mut buf)?;
+            emit_ast(&rendered_ast[0], &mut buf)?;
             let output = String::from(std::str::from_utf8(&buf)?);
             buf.clear();
             emit_ast(&ok_res, &mut buf)?;

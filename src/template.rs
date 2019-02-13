@@ -453,14 +453,21 @@ enum Rendered {
 }
 
 pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
-    -> Result<Ast, failure::Error>
+    -> Result<Vec<Ast>, failure::Error>
 {
     let ctx = RenderContext::new(values, env);
-    match ctx.render(ast)? {
-        Rendered::Plain(a) => Ok(a),
-        Rendered::Unpack(_) => return Err(format_err!(
-            "Cannot unpack rendered node into root"
-        )),
+    match ast {
+        Ast::Map(pos, Tag::LocalTag(tag), map) if tag == "*EachDocument" => {
+            return Err(format_err!("Unsupported tag: {}", tag));
+        },
+        _ => {
+            match ctx.render(ast)? {
+                Rendered::Plain(a) => Ok(vec!(a)),
+                Rendered::Unpack(_) => return Err(format_err!(
+                    "Cannot unpack rendered node into root"
+                )),
+            }
+        }
     }
 }
 
