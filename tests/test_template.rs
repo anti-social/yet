@@ -7,7 +7,7 @@ use failure::format_err;
 use quire::ast::Ast;
 use quire::emit_ast;
 
-use yet::template::{parse_template, render, RenderContext};
+use yet::template::{parse_template, render};
 
 fn env_vars_from_ast(env: Option<&Ast>)
     -> Result<HashMap<String, String>, failure::Error>
@@ -51,8 +51,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
         };
 
         let env_vars = env_vars_from_ast(env)?;
-        let ctx = RenderContext::new(values, &env_vars);
-        let render_result = render(tmpl, &ctx);
+        let render_result = render(tmpl, values, &env_vars);
 
         if let Some(ok_res) = result.get("ok") {
             let rendered_ast = render_result?;

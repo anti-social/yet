@@ -1,0 +1,55 @@
+---
+!*Each
+  items: ${{values.models}}
+  loop:
+  - key: model.${{item.name}}
+    name: !*If
+      condition: ${{values.simple-name}}
+      then:
+        ${{item.name}}
+      else:
+        ${{item.color}} - ${{item.size}}
+
+---
+values:
+  simple-name: true
+  models:
+  - name: red-small
+    color: red
+    size: 1
+  - name: red-big
+    color: red
+    size: 3
+  - name: white-middle
+    color: white
+    size: 2
+result:
+  ok:
+  - key: model.red-small
+    name: red-small
+  - key: model.red-big
+    name: red-big
+  - key: model.white-middle
+    name: white-middle
+
+---
+values:
+  simple-name: false
+  models:
+  - name: red-small
+    color: red
+    size: 1
+  - name: red-big
+    color: red
+    size: 3
+  - name: white-middle
+    color: white
+    size: 2
+result:
+  ok:
+  - key: model.red-small
+    name: red - 1
+  - key: model.red-big
+    name: red - 3
+  - key: model.white-middle
+    name: white - 2

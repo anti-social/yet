@@ -7,7 +7,7 @@ use argparse::{ArgumentParser, Store, StoreOption};
 
 use quire::emit_ast;
 
-use yet::template::{parse_template, parse_values, render, RenderContext};
+use yet::template::{parse_template, parse_values, render};
 
 fn main() -> Result<(), failure::Error> {
     let mut template_path = PathBuf::new();
@@ -31,11 +31,10 @@ fn main() -> Result<(), failure::Error> {
         None => None,
     };
     let env_vars = env::vars().collect::<HashMap<_, _>>();
-    let ctx = RenderContext::new(values.as_ref(), &env_vars);
 
     let mut out = std::io::stdout();
     for t in &templates {
-        let rendered_ast = render(t, &ctx)?;
+        let rendered_ast = render(t, values.as_ref(), &env_vars)?;
         if templates.len() > 0 {
             writeln!(&mut out, "---")?;
         }

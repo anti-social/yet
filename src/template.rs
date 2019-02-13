@@ -30,6 +30,9 @@ static BOOL_FALSE_VALUES: &[&str] = &[
     "off", "OFF", "Off",
 ];
 
+const VALUES_SCOPE: &str = "values";
+const ENV_SCOPE: &str = "env";
+
 pub trait WithPathResultExt<T, E>: failure::ResultExt<T, E> where E: fmt::Display {
     fn with_path<P: AsRef<Path>>(self, path: P)
         -> result::Result<T, failure::Context<String>>
@@ -139,39 +142,48 @@ impl<'a> TemplateScalar<'a> {
     }
 }
 
-pub struct RenderContext<'a> {
+struct RenderContext<'a> {
     values: Option<&'a Ast>,
     env: &'a HashMap<String, String>,
     // anchors: HashMap<String, Ast>,
+    scopes_stack: Vec<HashMap<String, Ast>>,
 }
 
+//struct ScopeGuard(Vec<HashMap<String, Ast>>);
+//
+//impl Drop for ScopeGuard {
+//    fn drop(&mut self) {
+//        self.0.pop();
+//    }
+//}
+
 impl<'a> RenderContext<'a> {
-    pub fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
+    fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
         RenderContext {
-            values, env
+            values, env, scopes_stack: vec!()
         }
+    }
+
+    fn values(&self) -> Result<&Ast, failure::Error> {
+        self.values.ok_or(format_err!("Values scope is missing"))
+    }
+
+    fn push_scopes(&mut self, scopes: HashMap<String, Ast>) {
+        self.scopes_stack.push(scopes);
+    }
+
+    fn pop_scopes(&mut self) {
+        self.scopes_stack.pop();
     }
 
     fn resolve_value(&self, var_path: &Vec<String>) -> Result<Ast, failure::Error> {
         let scope_and_path = var_path.split_first();
         let value = match scope_and_path {
-            Some((scope, path)) if scope == "values" => {
-                let mut cur_node = self.values.ok_or(format_err!("Values scope is missing"))?;
-                let mut cur_path = scope.clone();
-                for p in path {
-                    cur_path.push_str(&format!(".{}", p));
-                    let map = match cur_node {
-                        Ast::Map(_, _, map) => map,
-                        _ => return Err(format_err!("Expected a mapping: {}", var_path.join("."))),
-                    };
-                    cur_node = match map.get(p) {
-                        Some(v) => v,
-                        None => return Err(format_err!("Missing key: {}", cur_path)),
-                    };
-                }
-                clone_ast(cur_node)
+            Some((scope, path)) if scope == VALUES_SCOPE => {
+                let var_ast = follow_ast(self.values()?, path, scope)?;
+                clone_ast(var_ast)
             },
-            Some((scope, path)) if scope == "env" => {
+            Some((scope, path)) if scope == ENV_SCOPE => {
                 let key = path.join(".");
                 match self.env.get(&key) {
                     Some(v) => {
@@ -188,11 +200,80 @@ impl<'a> RenderContext<'a> {
                     None => return Err(format_err!("Missing key: env.{}", key))
                 }
             },
-            Some((s, _)) => return Err(format_err!("Unknown scope: {}", s)),
+            Some((scope, path)) => {
+                let mut found_ast = None;
+                for scopes_frame in self.scopes_stack.iter().rev() {
+                    match scopes_frame.get(scope) {
+                        Some(scope_ast) => {
+                            found_ast = Some(follow_ast(scope_ast, path, scope)?);
+                            break;
+                        }
+                        None => continue
+                    }
+                }
+                if let Some(var_ast) = found_ast {
+                    clone_ast(var_ast)
+                } else {
+                    return Err(format_err!("Unknown scope: {}", scope));
+                }
+            },
             None => return Err(format_err!("Empty variable path")),
         };
         Ok(value)
     }
+
+
+    fn render(&mut self, ast: &Ast) -> Result<Rendered, failure::Error> {
+        let rendered_ast = match ast {
+            Ast::Map(pos, tag, map) => {
+                match tag {
+                    Tag::LocalTag(t) if t == "*If" => {
+                        process_if(self, map)?
+                    }
+                    Tag::LocalTag(t) if t == "*Each" => {
+                        process_each(self, map)?
+                    }
+                    _ => {
+                        Rendered::Plain(process_map(self, map, pos, tag)?)
+                    }
+                }
+            }
+            Ast::Seq(pos, tag, seq) => {
+                Rendered::Plain(process_seq(self, seq, pos, tag)?)
+            }
+            Ast::Scalar(pos, tag, kind, val) => {
+                let tmpl = TemplateScalar::new(val, pos, tag, kind);
+                Rendered::Plain(render_template(&tmpl, self)?)
+            }
+            Ast::Null(pos, tag, kind) => {
+                Rendered::Plain(
+                    Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
+                )
+            }
+        };
+        Ok(rendered_ast)
+    }
+}
+
+fn follow_ast<'a>(ast: &'a Ast, var_path: &[String], scope: &'a str)
+    -> Result<&'a Ast, failure::Error>
+{
+    let mut cur_node = ast;
+    for (ix, p) in var_path.iter().enumerate() {
+        let map = match cur_node {
+            Ast::Map(_, _, map) => map,
+            _ => return Err(format_err!(
+                "Expected a mapping: {}.{}", scope, var_path.join(".")
+            )),
+        };
+        cur_node = match map.get(p) {
+            Some(v) => v,
+            None => return Err(format_err!(
+                "Missing key: {}.{}", scope, var_path[..ix+1].join(".")
+            )),
+        };
+    }
+    Ok(cur_node)
 }
 
 fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
@@ -212,7 +293,9 @@ fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
     }
 }
 
-fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Rendered, failure::Error> {
+fn process_if(ctx: &mut RenderContext, data: &BTreeMap<String, Ast>)
+    -> Result<Rendered, failure::Error>
+{
     let resolved_ast = match data.get("condition") {
         Some(Ast::Scalar(pos, tag, kind, cond)) => {
             let rendered_cond = render_template(
@@ -229,7 +312,7 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Rende
                             "`!*If` condition resolved to non-boolean value: {}", &cond_value
                         ));
                     };
-                    render_with_merge(&branch_ast, ctx)?
+                    ctx.render(&branch_ast)?
                 },
                 _ => return Err(format_err!("`!*If` condition must be resolved into scalar")),
             }
@@ -240,7 +323,88 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>) -> Result<Rende
     Ok(resolved_ast)
 }
 
-fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
+fn process_each(ctx: &mut RenderContext, each: &BTreeMap<String, Ast>)
+    -> Result<Rendered, failure::Error>
+{
+    let items_ast = match each.get("items") {
+        Some(Ast::Scalar(pos, tag, kind, value)) => {
+            process_scalar(ctx, value, pos, tag, kind)?
+        },
+        Some(items) => clone_ast(items),
+        None => return Err(format_err!("items is required field for *Each")),
+    };
+    let loop_ast = match each.get("loop") {
+        Some(loop_ast) => loop_ast,
+        None => return Err(format_err!("loop is required field for *Each")),
+    };
+
+    let items = match items_ast {
+        Ast::Seq(pos, tag, items) => items,
+        _ => return Err(format_err!("items of *Each must be a sequence")),
+    };
+    let mut result_ast = None;
+    for item in items {
+        let mut scopes = HashMap::new();
+        scopes.insert("item".to_string(), item);
+        ctx.push_scopes(scopes);
+        match ctx.render(&loop_ast)? {
+            Rendered::Plain(Ast::Seq(pos, _, seq)) => {
+                match result_ast {
+                    None => {
+                        result_ast = Some(Ast::Seq(pos.clone(), Tag::NonSpecific, seq));
+                    }
+                    Some(Ast::Seq(_, _, ref mut result_seq)) => {
+                        result_seq.extend(seq);
+                    }
+                    Some(_) => {
+                        return Err(format_err!("Cannot merge into a list"));
+                    }
+                }
+            },
+            Rendered::Plain(Ast::Map(pos, _, map)) => {
+                match result_ast {
+                    None => {
+                        result_ast = Some(Ast::Map(pos.clone(), Tag::NonSpecific, map));
+                    }
+                    Some(Ast::Map(_, _, ref mut result_map)) => {
+                        result_map.extend(map);
+                    }
+                    Some(_) => {
+                        return Err(format_err!("Cannot merge into a map"));
+                    }
+                }
+            }
+            _ => return Err(format_err!("Result of a loop cannot be a scalar")),
+        }
+        ctx.pop_scopes();
+    }
+
+    Ok(Rendered::Plain(
+        result_ast.unwrap_or_else(|| {
+            let pos = Pos {
+                filename: Rc::new("<each>".to_string()),
+                indent: 0,
+                line: 1,
+                line_start: true,
+                line_offset: 0,
+                offset: 0,
+            };
+            Ast::Null(pos, Tag::NonSpecific, NullKind::Implicit)
+        })
+    ))
+}
+
+fn process_scalar(
+    ctx: &RenderContext, value: &str, pos: &Pos, tag: &Tag, kind: &ScalarKind
+)
+    -> Result<Ast, failure::Error>
+{
+    render_template(
+        &TemplateScalar::new(value, pos, tag, kind), ctx
+    )
+}
+
+fn process_map(ctx: &mut RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
     -> Result<Ast, failure::Error>
 {
     let mut rendered_map = BTreeMap::new();
@@ -249,7 +413,7 @@ fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag:
             k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
         );
         if let Ast::Scalar(_, _, _, rendered_key) = render_template(&tmpl, ctx)? {
-            match render_with_merge(v, ctx)? {
+            match ctx.render(v)? {
                 Rendered::Plain(rendered_value) => {
                     rendered_map.insert(rendered_key, rendered_value);
                 },
@@ -267,12 +431,12 @@ fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag:
     Ok(Ast::Map(pos.clone(), clone_tag(tag), rendered_map))
 }
 
-fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
+fn process_seq(ctx: &mut RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
     -> Result<Ast, failure::Error>
 {
     let mut rendered_seq = Vec::with_capacity(seq.len());
     for a in seq {
-        match render_with_merge(a, ctx)? {
+        match ctx.render(a)? {
             Rendered::Plain(v) => rendered_seq.push(v),
             Rendered::Unpack(Ast::Seq(.., s)) => {
                 rendered_seq.extend(s);
@@ -289,43 +453,16 @@ enum Rendered {
     Unpack(Ast),
 }
 
-pub fn render(ast: &Ast, ctx: &RenderContext) -> Result<Ast, failure::Error> {
-    match render_with_merge(ast, ctx)? {
+pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
+    -> Result<Ast, failure::Error>
+{
+    let mut ctx = RenderContext::new(values, env);
+    match ctx.render(ast)? {
         Rendered::Plain(a) => Ok(a),
         Rendered::Unpack(_) => return Err(format_err!(
             "Cannot unpack rendered node into root"
         )),
     }
-}
-
-fn render_with_merge(ast: &Ast, ctx: &RenderContext)
-    -> Result<Rendered, failure::Error>
-{
-    let rendered_ast = match ast {
-        Ast::Map(pos, tag, map) => {
-            match tag {
-                Tag::LocalTag(t) if t == "*If" => {
-                    process_if(ctx, map)?
-                }
-                _ => {
-                    Rendered::Plain(process_map(ctx, map, pos, tag)?)
-                }
-            }
-        }
-        Ast::Seq(pos, tag, seq) => {
-            Rendered::Plain(process_seq(ctx, seq, pos, tag)?)
-        }
-        Ast::Scalar(pos, tag, kind, val) => {
-            let tmpl = TemplateScalar::new(val, pos, tag, kind);
-            Rendered::Plain(render_template(&tmpl, ctx)?)
-        }
-        Ast::Null(pos, tag, kind) => {
-            Rendered::Plain(
-                Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
-            )
-        }
-    };
-    Ok(rendered_ast)
 }
 
 fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
