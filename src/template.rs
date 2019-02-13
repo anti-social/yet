@@ -16,8 +16,10 @@ use quire::ast::NullKind;
 use quire::ast::ScalarKind;
 use quire::ast::Tag;
 
+use crate::constructs::Each;
 use crate::parser::template;
 use crate::parser::TemplatePart;
+use crate::util::{clone_ast, clone_null_kind, clone_scalar_kind, clone_tag};
 
 static BOOL_TRUE_VALUES: &[&str] = &[
     "true", "TRUE", "True",
@@ -50,51 +52,6 @@ impl<T, E: fmt::Display> WithPathResultExt<T, E> for result::Result<T, E>
 enum TemplatingError {
     #[fail(display = "template parsing error: {}", err)]
     ParseError { err: String }
-}
-
-fn clone_tag(tag: &Tag) -> Tag {
-    match tag {
-        Tag::NonSpecific => Tag::NonSpecific,
-        Tag::LocalTag(name) => Tag::LocalTag(name.clone()),
-        Tag::GlobalTag(name) => Tag::GlobalTag(name.clone()),
-    }
-}
-
-fn clone_scalar_kind(kind: &ScalarKind) -> ScalarKind {
-    match kind {
-        ScalarKind::Plain => ScalarKind::Plain,
-        ScalarKind::Quoted => ScalarKind::Quoted,
-    }
-}
-
-fn clone_null_kind(kind: &NullKind) -> NullKind {
-    match kind {
-        NullKind::Explicit => NullKind::Explicit,
-        NullKind::Implicit => NullKind::Implicit,
-    }
-}
-
-fn clone_ast(ast: &Ast) -> Ast {
-    match ast {
-        Ast::Map(pos, tag, map) => {
-            let cloned_map = map.iter()
-                .map(|(k, v)| (k.clone(), clone_ast(v)))
-                .collect::<BTreeMap<_, _>>();
-            Ast::Map(pos.clone(), clone_tag(tag), cloned_map)
-        }
-        Ast::Seq(pos, tag, seq) => {
-            let cloned_seq = seq.iter()
-                .map(|v| clone_ast(v))
-                .collect::<Vec<_>>();
-            Ast::Seq(pos.clone(), clone_tag(tag), cloned_seq)
-        }
-        Ast::Scalar(pos, tag, kind, val) => {
-            Ast::Scalar(pos.clone(), clone_tag(tag), clone_scalar_kind(kind), val.clone())
-        }
-        Ast::Null(pos, tag, kind) => {
-            Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
-        }
-    }
 }
 
 pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
@@ -143,7 +100,7 @@ impl<'a> TemplateScalar<'a> {
     }
 }
 
-struct RenderContext<'a> {
+pub(crate) struct RenderContext<'a> {
     values: Option<&'a Ast>,
     env: &'a HashMap<String, String>,
     // anchors: HashMap<String, Ast>,
@@ -223,7 +180,7 @@ impl<'a> RenderContext<'a> {
     }
 
 
-    fn render(&self, ast: &Ast) -> Result<Rendered, failure::Error> {
+    pub(crate) fn render(&self, ast: &Ast) -> Result<Rendered, failure::Error> {
         let rendered_ast = match ast {
             Ast::Map(pos, tag, map) => {
                 match tag {
@@ -231,7 +188,8 @@ impl<'a> RenderContext<'a> {
                         process_if(self, map)?
                     }
                     Tag::LocalTag(t) if t == "*Each" => {
-                        process_each(self, map)?
+                        let each = Each::from_map(self, map)?;
+                        process_each(self, each)?
                     }
                     _ => {
                         Rendered::Plain(process_map(self, map, pos, tag)?)
@@ -323,31 +281,16 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>)
     Ok(resolved_ast)
 }
 
-fn process_each(ctx: &RenderContext, each: &BTreeMap<String, Ast>)
+fn process_each(ctx: &RenderContext, each: Each)
     -> Result<Rendered, failure::Error>
 {
-    let items_ast = match each.get("items") {
-        Some(Ast::Scalar(pos, tag, kind, value)) => {
-            process_scalar(ctx, value, pos, tag, kind)?
-        },
-        Some(items) => clone_ast(items),
-        None => return Err(format_err!("items is required field for *Each")),
-    };
-    let loop_ast = match each.get("loop") {
-        Some(loop_ast) => loop_ast,
-        None => return Err(format_err!("loop is required field for *Each")),
-    };
-
-    let items = match items_ast {
-        Ast::Seq(pos, tag, items) => items,
-        _ => return Err(format_err!("items of *Each must be a sequence")),
-    };
     let mut result_ast = None;
-    for item in items {
+    for item in each.items {
         let mut scopes = HashMap::new();
         scopes.insert("item".to_string(), item);
         let scopes_guard = ctx.push_scopes(scopes);
-        match ctx.render(&loop_ast)? {
+
+        match ctx.render(&each.body)? {
             Rendered::Plain(Ast::Seq(pos, _, seq)) => {
                 match result_ast {
                     None => {
@@ -374,6 +317,7 @@ fn process_each(ctx: &RenderContext, each: &BTreeMap<String, Ast>)
                     }
                 }
             }
+            Rendered::Unpack(_) => unimplemented!(),
             _ => return Err(format_err!("Result of a loop cannot be a scalar")),
         }
     }
@@ -391,6 +335,28 @@ fn process_each(ctx: &RenderContext, each: &BTreeMap<String, Ast>)
             Ast::Null(pos, Tag::NonSpecific, NullKind::Implicit)
         })
     ))
+}
+
+fn process_each_document(ctx: &RenderContext, each: Each)
+    -> Result<Vec<Ast>, failure::Error>
+{
+    let mut result_docs = vec!();
+    for item in each.items {
+        let mut scopes = HashMap::new();
+        scopes.insert("item".to_string(), item);
+        let scopes_guard = ctx.push_scopes(scopes);
+
+        match ctx.render(&each.body)? {
+            Rendered::Plain(rendered_body) => {
+                result_docs.push(rendered_body);
+            },
+            Rendered::Unpack(_) => return Err(format_err!(
+                "Cannot unpack into a root document"
+            )),
+        }
+    }
+
+    Ok(result_docs)
 }
 
 fn process_scalar(
@@ -447,20 +413,28 @@ fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
     Ok(Ast::Seq(pos.clone(), clone_tag(tag), rendered_seq))
 }
 
-enum Rendered {
+pub(crate) enum Rendered {
     Plain(Ast),
     Unpack(Ast),
 }
 
 pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
-    -> Result<Ast, failure::Error>
+    -> Result<Vec<Ast>, failure::Error>
 {
     let ctx = RenderContext::new(values, env);
-    match ctx.render(ast)? {
-        Rendered::Plain(a) => Ok(a),
-        Rendered::Unpack(_) => return Err(format_err!(
-            "Cannot unpack rendered node into root"
-        )),
+    match ast {
+        Ast::Map(pos, Tag::LocalTag(tag), map) if tag == "*EachDocument" => {
+            let each = Each::from_map(&ctx, map)?;
+            process_each_document(&ctx, each)
+        },
+        _ => {
+            match ctx.render(ast)? {
+                Rendered::Plain(a) => Ok(vec!(a)),
+                Rendered::Unpack(_) => return Err(format_err!(
+                    "Cannot unpack rendered node into root"
+                )),
+            }
+        }
     }
 }
 

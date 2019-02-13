@@ -1,0 +1,22 @@
+---
+!*EachDocument
+items: ${{values.services}}
+loop:
+  kind: Deployment
+  metadata:
+    name: ${{item.name}}
+
+---
+values:
+  services:
+  - name: web
+  - name: grpc
+result:
+  multi-doc: true
+  ok:
+  - kind: Deployment
+    metadata:
+      name: web
+  - kind: Deployment
+    metadata:
+      name: grpc

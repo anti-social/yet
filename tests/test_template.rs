@@ -1,13 +1,26 @@
 use std::collections::HashMap;
 use std::fs::read_dir;
 use std::path::Path;
+use std::rc::Rc;
 
 use failure::format_err;
 
-use quire::ast::Ast;
+use quire::Pos;
+use quire::ast::{Ast, Tag};
 use quire::emit_ast;
 
 use yet::template::{parse_template, render};
+
+fn mk_fake_pos() -> Pos {
+    Pos {
+        filename: Rc::new("<test>".to_string()),
+        indent: 0,
+        line: 1,
+        line_start: true,
+        line_offset: 0,
+        offset: 0,
+    }
+}
 
 fn env_vars_from_ast(env: Option<&Ast>)
     -> Result<HashMap<String, String>, failure::Error>
@@ -54,9 +67,17 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
         let render_result = render(tmpl, values, &env_vars);
 
         if let Some(ok_res) = result.get("ok") {
-            let rendered_ast = render_result?;
+            let rendered_docs = render_result?;
             let mut buf = Vec::<u8>::new();
-            emit_ast(&rendered_ast, &mut buf)?;
+            match result.get("multi-doc") {
+                Some(_) => {
+                    let result_ast = Ast::Seq(mk_fake_pos(), Tag::NonSpecific, rendered_docs);
+                    emit_ast(&result_ast, &mut buf)?;
+                },
+                None => {
+                    emit_ast(&rendered_docs[0], &mut buf)?;
+                }
+            }
             let output = String::from(std::str::from_utf8(&buf)?);
             buf.clear();
             emit_ast(&ok_res, &mut buf)?;
