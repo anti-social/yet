@@ -35,10 +35,10 @@ fn main() -> Result<(), failure::Error> {
     let mut out = std::io::stdout();
     for t in &templates {
         let rendered_asts = render(t, values.as_ref(), &env_vars)?;
-        if templates.len() > 0 || rendered_asts.len() > 0 {
-            writeln!(&mut out, "---")?;
-        }
         for rendered_ast in &rendered_asts {
+            if rendered_asts.len() > 0 {
+                writeln!(&mut out, "---")?;
+            }
             emit_ast(&rendered_ast, &mut out)?;
         }
     }
