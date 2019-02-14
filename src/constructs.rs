@@ -27,12 +27,26 @@ impl<'a> Each<'a> {
                     }
                 },
                 Rendered::Unpack(_) => return Err(format_err!(
-                    "Unpacking is not supported for *Each items field"
+                    "Unpacking is not supported for `items` field of `*Each`"
                 )),
             },
             None => return Err(format_err!(
                 "`items` is required field for *Each"
             )),
+        };
+        let bind = match map.get("bind") {
+            Some(bind) => match ctx.render(bind)? {
+                Rendered::Plain(Ast::Scalar(_, _, _, bind_name)) => {
+                    bind_name
+                },
+                Rendered::Plain(_) => return Err(format_err!(
+                    "Only scalar can be a bind name"
+                )),
+                Rendered::Unpack(_) => return Err(format_err!(
+                    "Unpacking is not supported for `bind` field of `*Each`"
+                )),
+            },
+            None => "item".to_string(),
         };
         let body = match map.get("loop") {
             Some(loop_ast) => loop_ast,
@@ -42,9 +56,7 @@ impl<'a> Each<'a> {
         };
 
         Ok(Each {
-            items,
-            bind: "item".to_string(),
-            body,
+            items, bind, body
         })
     }
 }

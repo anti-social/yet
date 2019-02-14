@@ -1,0 +1,56 @@
+---
+!*Each
+  items: ${{values.services}}
+  bind: service
+  loop:
+  - kind: Deployment
+    metadata:
+      name: ${{values.project.name}}-${{service.name}}
+    template:
+      env: !*Each
+        items: ${{values.env}}
+        bind: environ
+        loop:
+          ${{service.env-prefix}}_${{environ.name}}: ${{environ.value}}
+  - kind: Service
+    metadata:
+      name: ${{values.project.name}}-${{service.name}}
+
+---
+values:
+  project:
+    name: test
+  services:
+  - name: web
+    env-prefix: WEB
+    memory: 512m
+  - name: grpc
+    env-prefix: GRPC
+    memory: 256m
+  env:
+  - name: LANG
+    value: en_US.UTF-8
+  - name: JAVA_OPTS
+    value: -XshowSettings:vm
+result:
+  ok:
+  - kind: Deployment
+    metadata:
+      name: test-web
+    template:
+      env:
+        WEB_LANG: en_US.UTF-8
+        WEB_JAVA_OPTS: -XshowSettings:vm
+  - kind: Service
+    metadata:
+      name: test-web
+  - kind: Deployment
+    metadata:
+      name: test-grpc
+    template:
+      env:
+        GRPC_LANG: en_US.UTF-8
+        GRPC_JAVA_OPTS: -XshowSettings:vm
+  - kind: Service
+    metadata:
+      name: test-grpc

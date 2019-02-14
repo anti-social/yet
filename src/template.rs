@@ -287,7 +287,7 @@ fn process_each(ctx: &RenderContext, each: Each)
     let mut result_ast = None;
     for item in each.items {
         let mut scopes = HashMap::new();
-        scopes.insert("item".to_string(), item);
+        scopes.insert(each.bind.clone(), item);
         let scopes_guard = ctx.push_scopes(scopes);
 
         match ctx.render(&each.body)? {
@@ -343,7 +343,7 @@ fn process_each_document(ctx: &RenderContext, each: Each)
     let mut result_docs = vec!();
     for item in each.items {
         let mut scopes = HashMap::new();
-        scopes.insert("item".to_string(), item);
+        scopes.insert(each.bind.clone(), item);
         let scopes_guard = ctx.push_scopes(scopes);
 
         match ctx.render(&each.body)? {
