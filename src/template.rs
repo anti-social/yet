@@ -101,13 +101,13 @@ impl<'a> TemplateScalar<'a> {
 }
 
 pub(crate) struct RenderContext<'a> {
-    values: Option<&'a Ast>,
-    env: &'a HashMap<String, String>,
+    pub values: Option<&'a Ast>,
+    pub env: &'a HashMap<String, String>,
     // anchors: HashMap<String, Ast>,
-    scopes_stack: RefCell<Vec<HashMap<String, Ast>>>,
+    pub scopes_stack: RefCell<Vec<HashMap<String, Ast>>>,
 }
 
-struct ScopesGuard<'a>(&'a RefCell<Vec<HashMap<String, Ast>>>);
+pub(crate) struct ScopesGuard<'a>(&'a RefCell<Vec<HashMap<String, Ast>>>);
 
 impl<'a> Drop for ScopesGuard<'a> {
     fn drop(&mut self) {
@@ -122,11 +122,11 @@ impl<'a> RenderContext<'a> {
         }
     }
 
-    fn values(&self) -> Result<&Ast, failure::Error> {
+    pub(crate) fn values(&self) -> Result<&Ast, failure::Error> {
         self.values.ok_or(format_err!("Values scope is missing"))
     }
 
-    fn push_scopes(&self, scopes: HashMap<String, Ast>) -> ScopesGuard {
+    pub(crate) fn push_scopes(&self, scopes: HashMap<String, Ast>) -> ScopesGuard {
         self.scopes_stack.borrow_mut().push(scopes);
         ScopesGuard(&self.scopes_stack)
     }

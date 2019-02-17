@@ -21,7 +21,7 @@ pub enum TemplatePart {
 
 #[derive(Debug, PartialEq)]
 pub struct Variable {
-    name: String,
+    pub path: Vec<String>,
 }
 
 #[derive(Debug, Fail)]
@@ -80,6 +80,15 @@ fn var_path<I>() -> impl Parser<Output = Vec<String>, Input = I>
     sep_by1(var_name(), token('.'))
 }
 
+fn var_path_expr<I>() -> impl Parser<Output = Variable, Input = I>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>
+{
+    sep_by1(var_name(), token('.'))
+        .map(|path| Variable { path })
+}
+
 fn whitespace<I>() -> impl Parser<Input = I>
     where
         I: Stream<Item = char>,
@@ -88,13 +97,12 @@ fn whitespace<I>() -> impl Parser<Input = I>
     skip_many1(space())
 }
 
-fn var_name_expr<I>() -> impl Parser<Output = Variable, Input = I>
+fn var_name_expr<I>() -> impl Parser<Output = String, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     many1(alpha_num().or(satisfy(|c| c == '-' || c == '_')))
-        .map(|v| Variable { name: v })
 }
 
 fn test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
@@ -132,7 +140,7 @@ fn var_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
-    var_name_expr()
+    var_path_expr()
         .map(|var| SubstExpr::Var(var))
 }
 
@@ -142,7 +150,7 @@ fn test_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
-        var_name_expr(),
+        var_path_expr(),
         whitespace(),
         string("is"),
         whitespace(),
@@ -169,7 +177,7 @@ fn test_expr2<I>() -> impl Parser<Output = SubstExpr, Input = I>
         >
 {
     (
-        var_name_expr(),
+        var_path_expr(),
         whitespace(),
         string("is"),
         whitespace(),
@@ -284,7 +292,7 @@ mod tests {
     fn test_var_name_expr() {
         assert_eq!(
             var_name_expr().parse("a"),
-            Ok((Variable {name: "a".to_string()}, ""))
+            Ok(("a".to_string(), ""))
         );
     }
 
@@ -348,7 +356,7 @@ mod tests {
             test_expr().parse("a is defined"),
             Ok((
                 SubstExpr::Test {
-                    var: Variable { name: "a".to_string() },
+                    var: Variable { path: vec!("a".to_string()) },
                     fun: TestFun::Defined,
                 },
                 ""
@@ -363,7 +371,7 @@ mod tests {
         assert_eq!(
             subst_expr().parse("a"),
             Ok((
-                SubstExpr::Var(Variable { name: "a".to_string() }),
+                SubstExpr::Var(Variable { path: vec!("a".to_string()) }),
                 ""
             ))
         );
@@ -371,7 +379,7 @@ mod tests {
             subst_expr().parse("a is defined"),
             Ok((
                 SubstExpr::Test {
-                    var: Variable { name: "a".to_string() },
+                    var: Variable { path: vec!("a".to_string()) },
                     fun: TestFun::Defined,
                 },
                 ""
@@ -386,19 +394,19 @@ mod tests {
         assert_matches!(
             subst_expr2().easy_parse(State::new("a")),
             Ok((
-                SubstExpr::Var(Variable { name: ref var_name }),
+                SubstExpr::Var(Variable { path: ref var_path }),
                 State { input, .. }
-            )) if var_name == "a" && input == ""
+            )) if var_path == &["a".to_string()] && input == ""
         );
         assert_matches!(
             subst_expr2().easy_parse("a is defined"),
             Ok((
                 SubstExpr::Test {
-                    var: Variable { name: ref var_name },
+                    var: Variable { path: ref var_path },
                     fun: TestFun::Defined,
                 },
                 input
-            )) if var_name == "a" && input == ""
+            )) if var_path == &["a".to_string()] && input == ""
         );
     }
 
