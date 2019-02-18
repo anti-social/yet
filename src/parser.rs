@@ -24,6 +24,15 @@ pub struct Variable {
     pub path: Vec<String>,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum Arg {
+    Var(Variable),
+/*     Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+ */}
+
 #[derive(Debug, Fail)]
 pub enum ParseSubstitutionError {
     #[fail(display = "error when parsing substitution expression")]
@@ -34,13 +43,8 @@ pub enum ParseSubstitutionError {
 pub enum TestFun {
     Defined,
     Undefined,
-}
-
-impl TestFun {
-    fn test(var: Variable) -> bool {
-        true
-    }
-}
+/*     Eq(),
+ */}
 
 impl FromStr for TestFun {
     type Err = failure::Compat<ParseSubstitutionError>;
@@ -51,7 +55,8 @@ impl FromStr for TestFun {
         Ok(match name {
             "defined" => Defined,
             "undefined" => Undefined,
-            _ => {
+/*             "eq" | "equalto" => Eq(),
+ */            _ => {
                 return Err(ParseSubstitutionError::ParseError.compat());
             },
         })
@@ -60,8 +65,8 @@ impl FromStr for TestFun {
 
 #[derive(Debug, PartialEq)]
 pub enum SubstExpr {
-    Var(Variable),
-    Test { var: Variable, fun: TestFun },
+    Var(Arg),
+    Test { fun: TestFun, args: Vec<Arg> },
 }
 
 fn var_name<I>() -> impl Parser<Output = String, Input = I>
@@ -80,13 +85,13 @@ fn var_path<I>() -> impl Parser<Output = Vec<String>, Input = I>
     sep_by1(var_name(), token('.'))
 }
 
-fn var_path_expr<I>() -> impl Parser<Output = Variable, Input = I>
+fn var_path_expr<I>() -> impl Parser<Output = Arg, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
     sep_by1(var_name(), token('.'))
-        .map(|path| Variable { path })
+        .map(|path| Arg::Var(Variable { path }))
 }
 
 fn whitespace<I>() -> impl Parser<Input = I>
@@ -103,15 +108,6 @@ fn var_name_expr<I>() -> impl Parser<Output = String, Input = I>
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     many1(alpha_num().or(satisfy(|c| c == '-' || c == '_')))
-}
-
-fn test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
-    where
-        I: Stream<Item = char>,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    many1::<String, _>(alpha_num())
-        .map(|name| TestFun::Defined)
 }
 
 fn test_fun_expr2<I>() -> impl Parser<Output = TestFun, Input = I>
@@ -144,21 +140,6 @@ fn var_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         .map(|var| SubstExpr::Var(var))
 }
 
-fn test_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
-    where
-        I: Stream<Item = char>,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    (
-        var_path_expr(),
-        whitespace(),
-        string("is"),
-        whitespace(),
-        test_fun_expr(),
-    )
-        .map(|(var, _, _, _, fun)| SubstExpr::Test {var, fun})
-}
-
 fn test_expr2<I>() -> impl Parser<Output = SubstExpr, Input = I>
     where
         I: Stream<Item = char>,
@@ -183,16 +164,7 @@ fn test_expr2<I>() -> impl Parser<Output = SubstExpr, Input = I>
         whitespace(),
         test_fun_expr2(),
     )
-        .map(|(var, _, _, _, fun)| SubstExpr::Test {var, fun})
-}
-
-fn subst_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
-    where
-        I: Stream<Item = char>,
-        I::Error: ParseError<I::Item, I::Range, I::Position>,
-{
-    attempt(test_expr())
-        .or(var_expr())
+        .map(|(var, _, _, _, fun)| SubstExpr::Test {fun, args: vec!()})
 }
 
 fn subst_expr2<I>() -> impl Parser<Output = SubstExpr, Input = I>
@@ -212,7 +184,7 @@ fn subst_expr2<I>() -> impl Parser<Output = SubstExpr, Input = I>
             <I as StreamOnce>::Position
         >
 {
-    attempt(test_expr())
+    attempt(test_expr2())
         .or(var_expr())
 }
 

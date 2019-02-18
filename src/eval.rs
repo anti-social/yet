@@ -9,12 +9,14 @@ use crate::util::clone_ast;
 const VALUES_SCOPE: &str = "values";
 const ENV_SCOPE: &str = "env";
 
+#[derive(Debug)]
 enum EvalOk {
     Node(Ast),
     Bool(bool),
     Str(String),
 }
 
+#[derive(Debug)]
 enum EvalErr {
     MissingVar(String),
     ExpectedMapping(String),
@@ -116,15 +118,45 @@ fn follow_ast<'a>(ast: &'a Ast, scope: &'a str, var_path: &[String])
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use matches::assert_matches;
+    
     use crate::parser::{SubstExpr, TestFun, Variable};
-    use super::Eval;
+    use crate::template::RenderContext;
+    use super::{Eval, EvalOk};
+
+    fn get_test_env() -> HashMap<String, String> {
+        let mut env = HashMap::new();
+        env.insert("TEST".to_string(), "1".to_string());
+        env
+    }
 
     #[test]
-    fn test_eval_expr() {
+    fn test_eval_defined_false() {
         let expr = SubstExpr::Test {
-            var: Variable { path: vec!("env".to_string(), "Test".to_string()) },
+            var: Variable { path: vec!("env".to_string(), "UNDEFINED".to_string()) },
             fun: TestFun::Defined,
         };
-        let res = expr.eval();
+        let env = get_test_env();
+        let ctx = RenderContext::new(None, &env);
+        assert_matches!(
+            expr.eval(&ctx),
+            Ok(EvalOk::Bool(res)) if res == false
+        );
+    }
+
+    #[test]
+    fn test_eval_defined_true() {
+        let expr = SubstExpr::Test {
+            var: Variable { path: vec!("env".to_string(), "TEST".to_string()) },
+            fun: TestFun::Defined,
+        };
+        let env = get_test_env();
+        let ctx = RenderContext::new(None, &env);
+        assert_matches!(
+            expr.eval(&ctx),
+            Ok(EvalOk::Bool(res)) if res == true
+        );
     }
 }

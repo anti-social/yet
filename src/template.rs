@@ -116,7 +116,7 @@ impl<'a> Drop for ScopesGuard<'a> {
 }
 
 impl<'a> RenderContext<'a> {
-    fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
+    pub(crate) fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
         RenderContext {
             values, env, scopes_stack: RefCell::new(vec!())
         }
