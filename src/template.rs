@@ -7,7 +7,9 @@ use std::path::Path;
 use std::rc::Rc;
 use std::result;
 
-use failure::{self, format_err};
+use combine::stream::state::State;
+
+use failure::{self, Compat, format_err};
 use failure_derive::Fail;
 
 use quire::Pos;
@@ -18,8 +20,10 @@ use quire::ast::Tag;
 
 use crate::constructs::Each;
 use crate::parser::template;
-use crate::parser::TemplatePart;
+use crate::parser::{ParseSubstitutionError, TemplatePart};
 use crate::util::{clone_ast, clone_null_kind, clone_scalar_kind, clone_tag};
+use crate::parser::SubstExpr;
+use crate::parser::Arg;
 
 static BOOL_TRUE_VALUES: &[&str] = &[
     "true", "TRUE", "True",
@@ -443,11 +447,11 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
 {
     use combine::Parser;
 
-    let parse_res = template().parse(tmpl.tmpl)
+    let parse_res = template().easy_parse(State::new(tmpl.tmpl))
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?;
     let template_parts = match parse_res {
-        (_, rest) if rest.len() > 0 => {
-            return Err(format_err!("Non empty parse"));
+        (_, State { input, .. }) if input.len() > 0 => {
+            return Err(format_err!("Non empty parse: {}", input));
         }
         (template_parts, _) => {
             template_parts
@@ -457,7 +461,7 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
     // Single plain (non-quoted) substitution can be an Ast
     // command: ${{values.cmd}}
     match (tmpl.kind, template_parts.split_first()) {
-        (ScalarKind::Plain, Some((TemplatePart::Subst(var_path), rest)))
+        (ScalarKind::Plain, Some((TemplatePart::Subst(SubstExpr::Var(Arg::Var(var_path))), rest)))
         if rest.len() == 0 => {
             return Ok(ctx.resolve_value(var_path)?);
         }
@@ -468,7 +472,7 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
     for p in &template_parts {
         match p {
             TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
-            TemplatePart::Subst(var_path) => {
+            TemplatePart::Subst(SubstExpr::Var(Arg::Var(var_path))) => {
                 match ctx.resolve_value(var_path)? {
                     Ast::Scalar(_, _, _, v) => {
                         rendered_tmpl.push_str(&v);
@@ -482,7 +486,8 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
                         ));
                     },
                 }
-            }
+            },
+            _ => return Err(format_err!("Unsupported expression"))
         }
     }
 
