@@ -225,7 +225,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "yet"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "argparse 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "combine 3.6.6 (registry+https://github.com/rust-lang/crates.io-index)",
