@@ -543,6 +543,14 @@ mod tests {
             && input == ""
         );
         assert_matches!(
+            subst_part_expr().easy_parse(State::new("${{ a }}")),
+            Ok((
+                TemplatePart::Subst(SubstExpr::Var(Arg::Var(ref var_path))),
+                State { input, .. }
+            )) if var_path == &["a".to_string()]
+            && input == ""
+        );
+        assert_matches!(
             subst_part_expr().easy_parse(State::new("${{a.b}} ")),
             Ok((
                TemplatePart::Subst(SubstExpr::Var(Arg::Var(ref var_path))),

@@ -6,6 +6,12 @@ use quire::ast::Ast;
 
 use crate::template::{RenderContext, Rendered};
 
+pub(crate) struct If<'a> {
+    pub condition: Ast,
+    pub then_body: &'a Ast,
+    pub else_body: &'a Ast,
+}
+
 pub(crate) struct Each<'a> {
     pub items: Vec<Ast>,
     pub bind: String,
