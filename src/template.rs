@@ -19,26 +19,13 @@ use quire::ast::ScalarKind;
 use quire::ast::Tag;
 
 use crate::constructs::Each;
-use crate::parser::template;
+use crate::eval::{BOOL_FALSE_VALUES, BOOL_TRUE_VALUES};
+use crate::eval::{Eval, EvalOk, EvalErr};
+use crate::parser::template_parser;
 use crate::parser::{ParseSubstitutionError, TemplatePart};
 use crate::util::{clone_ast, clone_null_kind, clone_scalar_kind, clone_tag};
 use crate::parser::SubstExpr;
 use crate::parser::Arg;
-
-static BOOL_TRUE_VALUES: &[&str] = &[
-    "true", "TRUE", "True",
-    "y", "Y", "yes", "YES", "Yes",
-    "on", "ON", "On",
-];
-
-static BOOL_FALSE_VALUES: &[&str] = &[
-    "false", "FALSE", "False",
-    "n", "N", "no", "NO", "No",
-    "off", "OFF", "Off",
-];
-
-const VALUES_SCOPE: &str = "values";
-const ENV_SCOPE: &str = "env";
 
 pub trait WithPathResultExt<T, E>: failure::ResultExt<T, E> where E: fmt::Display {
     fn with_path<P: AsRef<Path>>(self, path: P)
@@ -55,7 +42,9 @@ impl<T, E: fmt::Display> WithPathResultExt<T, E> for result::Result<T, E>
 #[derive(Debug, Fail)]
 enum TemplatingError {
     #[fail(display = "template parsing error: {}", err)]
-    ParseError { err: String }
+    ParseError { err: String },
+    #[fail(display = "template evaluation error: {:?}", err)]
+    EvalError { err: EvalErr },
 }
 
 pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
@@ -89,21 +78,6 @@ pub fn parse_values(fpath: &Path) -> Result<Ast, failure::Error> {
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?)
 }
 
-struct TemplateScalar<'a> {
-    pub tmpl: &'a str,
-    pub pos: &'a Pos,
-    pub tag: &'a Tag,
-    pub kind: &'a ScalarKind,
-}
-
-impl<'a> TemplateScalar<'a> {
-    fn new(tmpl: &'a str, pos: &'a Pos, tag: &'a Tag, kind: &'a ScalarKind)
-        -> TemplateScalar<'a>
-    {
-        TemplateScalar {tmpl, pos, tag, kind}
-    }
-}
-
 pub(crate) struct RenderContext<'a> {
     pub values: Option<&'a Ast>,
     pub env: &'a HashMap<String, String>,
@@ -135,55 +109,6 @@ impl<'a> RenderContext<'a> {
         ScopesGuard(&self.scopes_stack)
     }
 
-    fn resolve_value(&self, var_path: &Vec<String>) -> Result<Ast, failure::Error> {
-        let scope_and_path = var_path.split_first();
-        let value = match scope_and_path {
-            Some((scope, path)) if scope == VALUES_SCOPE => {
-                let var_ast = follow_ast(self.values()?, path, scope)?;
-                clone_ast(var_ast)
-            },
-            Some((scope, path)) if scope == ENV_SCOPE => {
-                let key = path.join(".");
-                match self.env.get(&key) {
-                    Some(v) => {
-                        let pos = Pos {
-                            filename: Rc::new("<env>".to_string()),
-                            indent: 0,
-                            line: 1,
-                            line_start: true,
-                            line_offset: 0,
-                            offset: 0,
-                        };
-                        Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Quoted, v.clone())
-                    },
-                    None => return Err(format_err!("Missing key: env.{}", key))
-                }
-            },
-            Some((scope, path)) => {
-                let mut found_ast = None;
-                for scopes_frame in self.scopes_stack.borrow().iter().rev() {
-                    match scopes_frame.get(scope) {
-                        Some(scope_ast) => {
-                            found_ast = Some(clone_ast(
-                                follow_ast(scope_ast, path, scope)?
-                            ));
-                            break;
-                        }
-                        None => continue
-                    }
-                }
-                if let Some(var_ast) = found_ast {
-                    var_ast
-                } else {
-                    return Err(format_err!("Unknown scope: {}", scope));
-                }
-            },
-            None => return Err(format_err!("Empty variable path")),
-        };
-        Ok(value)
-    }
-
-
     pub(crate) fn render(&self, ast: &Ast) -> Result<Rendered, failure::Error> {
         let rendered_ast = match ast {
             Ast::Map(pos, tag, map) => {
@@ -204,8 +129,7 @@ impl<'a> RenderContext<'a> {
                 Rendered::Plain(process_seq(self, seq, pos, tag)?)
             }
             Ast::Scalar(pos, tag, kind, val) => {
-                let tmpl = TemplateScalar::new(val, pos, tag, kind);
-                Rendered::Plain(render_template(&tmpl, self)?)
+                Rendered::Plain(process_scalar(self, val, pos, tag, kind)?)
             }
             Ast::Null(pos, tag, kind) => {
                 Rendered::Plain(
@@ -260,11 +184,9 @@ fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>)
 {
     let resolved_ast = match data.get("condition") {
         Some(Ast::Scalar(pos, tag, kind, cond)) => {
-            let rendered_cond = render_template(
-                &TemplateScalar::new(cond, pos, tag, kind), ctx
-            )?;
+            let rendered_cond = process_scalar(ctx, cond, pos, tag, kind)?;
             match rendered_cond {
-                Ast::Scalar(_, _, _, cond_value) => {
+                Ast::Scalar(_, _, ScalarKind::Plain, cond_value) => {
                     let branch_ast = if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
                         resolve_branch(data, "then")
                     } else if BOOL_FALSE_VALUES.contains(&cond_value.as_str()) {
@@ -351,6 +273,9 @@ fn process_each_document(ctx: &RenderContext, each: Each)
         let scopes_guard = ctx.push_scopes(scopes);
 
         match ctx.render(&each.body)? {
+            Rendered::Plain(Ast::Null(_, _, NullKind::Implicit)) => {
+                continue;
+            },
             Rendered::Plain(rendered_body) => {
                 result_docs.push(rendered_body);
             },
@@ -363,25 +288,14 @@ fn process_each_document(ctx: &RenderContext, each: Each)
     Ok(result_docs)
 }
 
-fn process_scalar(
-    ctx: &RenderContext, value: &str, pos: &Pos, tag: &Tag, kind: &ScalarKind
-)
-    -> Result<Ast, failure::Error>
-{
-    render_template(
-        &TemplateScalar::new(value, pos, tag, kind), ctx
-    )
-}
-
 fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
     -> Result<Ast, failure::Error>
 {
     let mut rendered_map = BTreeMap::new();
     for (k, v) in map {
-        let tmpl = TemplateScalar::new(
-            k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
-        );
-        if let Ast::Scalar(_, _, _, rendered_key) = render_template(&tmpl, ctx)? {
+        if let Ast::Scalar(_, _, _, rendered_key) = process_scalar(
+            ctx, k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
+        )? {
             match ctx.render(v)? {
                 Rendered::Plain(rendered_value) => {
                     rendered_map.insert(rendered_key, rendered_value);
@@ -442,12 +356,12 @@ pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
     }
 }
 
-fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
+fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &ScalarKind)
     -> Result<Ast, failure::Error>
 {
     use combine::Parser;
 
-    let parse_res = template().easy_parse(State::new(tmpl.tmpl))
+    let parse_res = template_parser().easy_parse(State::new(tmpl))
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?;
     let template_parts = match parse_res {
         (_, State { input, .. }) if input.len() > 0 => {
@@ -458,12 +372,12 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
         }
     };
 
-    // Single plain (non-quoted) substitution can be an Ast
-    // command: ${{values.cmd}}
-    match (tmpl.kind, template_parts.split_first()) {
-        (ScalarKind::Plain, Some((TemplatePart::Subst(SubstExpr::Var(Arg::Var(var_path))), rest)))
+    // Single plain (non-quoted) substitution can be an Ast node:
+    // ${{values.map-or-list}}
+    match (kind, template_parts.split_first()) {
+        (ScalarKind::Plain, Some((TemplatePart::Subst(expr), rest)))
         if rest.len() == 0 => {
-            return Ok(ctx.resolve_value(var_path)?);
+            return Ok(expr.eval(ctx)?.into_ast());
         }
         _ => {}
     }
@@ -472,8 +386,8 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
     for p in &template_parts {
         match p {
             TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
-            TemplatePart::Subst(SubstExpr::Var(Arg::Var(var_path))) => {
-                match ctx.resolve_value(var_path)? {
+            TemplatePart::Subst(expr) => {
+                match expr.eval(ctx)?.into_ast() {
                     Ast::Scalar(_, _, _, v) => {
                         rendered_tmpl.push_str(&v);
                     },
@@ -492,9 +406,9 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
     }
 
     Ok(Ast::Scalar(
-        tmpl.pos.clone(),
-        clone_tag(tmpl.tag),
-        clone_scalar_kind(tmpl.kind),
+        pos.clone(),
+        clone_tag(tag),
+        clone_scalar_kind(kind),
         rendered_tmpl
     ))
 }

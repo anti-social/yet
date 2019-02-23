@@ -1,3 +1,8 @@
+use std::rc::Rc;
+
+use failure::Fail;
+
+use quire::Pos;
 use quire::ast::Ast;
 use quire::ast::Tag;
 use quire::ast::ScalarKind;
@@ -6,13 +11,13 @@ use crate::parser::{Arg, SubstExpr, TestFun};
 use crate::template::RenderContext;
 use crate::util::clone_ast;
 
-static BOOL_TRUE_VALUES: &[&str] = &[
+pub static BOOL_TRUE_VALUES: &[&str] = &[
     "true", "TRUE", "True",
     "y", "Y", "yes", "YES", "Yes",
     "on", "ON", "On",
 ];
 
-static BOOL_FALSE_VALUES: &[&str] = &[
+pub static BOOL_FALSE_VALUES: &[&str] = &[
     "false", "FALSE", "False",
     "n", "N", "no", "NO", "No",
     "off", "OFF", "Off",
@@ -22,22 +27,77 @@ const VALUES_SCOPE: &str = "values";
 const ENV_SCOPE: &str = "env";
 
 #[derive(Debug)]
-enum EvalOk {
+pub enum EvalOk {
     Node(Ast),
     Bool(bool),
+    Int(i64),
+    Float(f64),
     Str(String),
 }
 
-#[derive(Debug, Clone)]
-enum EvalErr {
+impl EvalOk {
+    pub fn into_ast(self) -> Ast {
+        use self::EvalOk::*;
+
+        let pos = Pos {
+            filename: Rc::new("<eval>".to_string()),
+            indent: 0,
+            line: 1,
+            line_start: true,
+            line_offset: 0,
+            offset: 0,
+        };
+        match self {
+            Node(v) => v,
+            Bool(v) => Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Plain, v.to_string()),
+            Int(v) => Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Plain,v.to_string()),
+            Float(v) => Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Plain,v.to_string()),
+            Str(v) => Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Plain,v),
+        }
+    }
+
+    pub fn type_name(&self) -> &str {
+        use self::EvalOk::*;
+
+        match self {
+            Node(_) => "<yaml ast>",
+            Bool(_) => "<bool>",
+            Int(_) => "<integer>",
+            Float(_) => "<float>",
+            Str(_) => "<string>",
+        }
+    }
+}
+
+impl Clone for EvalOk {
+    fn clone(&self) -> EvalOk {
+        use self::EvalOk::*;
+
+        match self {
+            Node(v) => Node(clone_ast(v)),
+            Bool(v) => Bool(*v),
+            Int(v) => Int(*v),
+            Float(v) => Float(*v),
+            Str(v) => Str(v.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Fail)]
+pub(crate) enum EvalErr {
+    #[fail(display = "missing variable: {}", 0)]
     MissingVar(String),
+    #[fail(display = "expected mapping: {}", 0)]
     ExpectedMapping(String),
-    NumArgs(String),
+    #[fail(display = "invalid number of arguments: {}", 0)]
+    InvalidNumArgs(String),
+    #[fail(display = "types cannot be compared: {}", 0)]
+    IncomparableTypes(String, String),
 }
 
 type EvalResult = Result<EvalOk, EvalErr>;
 
-trait Eval {
+pub(crate) trait Eval {
     fn eval(&self, ctx: &RenderContext) -> EvalResult;
     fn eval_arg(&self, ctx: &RenderContext, arg: &Arg) -> EvalResult;
     fn eval_expr(&self, ctx: &RenderContext, fun: &TestFun, args: &Vec<EvalResult>) -> EvalResult;
@@ -55,19 +115,22 @@ impl Eval for SubstExpr {
     }
 
     fn eval_arg(&self, ctx: &RenderContext, arg: &Arg) -> EvalResult {
-        match arg {
+        use self::EvalOk::*;
+        use self::EvalErr::*;
+
+        let res = match arg {
             Arg::Var(var_path) => match var_path.split_first() {
                 Some((scope, path)) if scope == VALUES_SCOPE => {
                     match ctx.values {
                         Some(values) => follow_ast(values, scope, path),
-                        None => Result::Err(EvalErr::MissingVar(format!("Missing scope: values")))
+                        None => Err(MissingVar(VALUES_SCOPE.to_string()))
                     }
                 },
                 Some((scope, path)) if scope == ENV_SCOPE => {
                     let key = path.join(".");
                     match ctx.env.get(&key) {
-                        Some(v) => Result::Ok(EvalOk::Str(v.clone())),
-                        None => Result::Err(EvalErr::MissingVar(format!("Missing key: env.{}", key))),
+                        Some(v) => Ok(Str(v.clone())),
+                        None => Err(MissingVar(format!("{}.{}", scope, key))),
                     }
                 },
                 Some((scope, path)) => {
@@ -86,11 +149,19 @@ impl Eval for SubstExpr {
                     if let Some(var_ast) = found_ast {
                         var_ast
                     } else {
-                        Result::Err(EvalErr::MissingVar(format!("Unknown scope: {}", scope)))
+                        Err(MissingVar(format!("Unknown scope: {}", scope)))
                     }
                 },
-                None => Result::Err(EvalErr::MissingVar(format!("Empty variable path"))),
+                None => Err(MissingVar(format!("Empty variable path"))),
             },
+        };
+
+        match res {
+            Ok(Node(Ast::Scalar(_, _, ScalarKind::Plain, ref s))) => {
+                eval_plain_scalar(s)
+            },
+            Ok(v) => Ok(v.clone()),
+            Err(e) => Err(e.clone()),
         }
     }
 
@@ -119,51 +190,57 @@ impl Eval for SubstExpr {
             },
             TestFun::Eq => {
                 required_num_args(fun, args, 2)?;
-                match (&args[0], &args[1]) {
-                    (Ok(Bool(a1)), Ok(Bool(a2))) => {
-                        Ok(Bool(a1 == a2))
-                    },
-                    (Ok(Bool(a1)), Ok(Node(Ast::Scalar(_, _, ScalarKind::Plain, a2))))
-                    | (Ok(Node(Ast::Scalar(_, _, ScalarKind::Plain, a2))), Ok(Bool(a1))) => {
-                        Ok(Bool(a1 == Ba2))
-                    },
-                    (Ok(Str(a1)), Ok(Str(a2))) => {
-                        Ok(Bool(a1 == a2))
-                    },
-                    (Ok(Node(Ast::Scalar(.., a1))), Ok(Str(a2)))
-                    | (Ok(Str(a2)), Ok(Node(Ast::Scalar(.., a1)))) => {
-                        Ok(Bool(a1 == a2))
-                    },
-                    (Ok(Node(a1)), Ok(Node(a2))) => match (a1, a2) {
-                        (Ast::Scalar(.., s1), Ast::Scalar(.., s2)) => Ok(Bool(s1 == s2)),
-                        _ => unimplemented!(),
-                    },
-                    _ => unimplemented!(),
-                }
+                eval_eq(&args[0], &args[1], false)
+            },
+            TestFun::NotEq => {
+                required_num_args(fun, args, 2)?;
+                eval_eq(&args[0], &args[1], true)
             }
         }
     }
 }
 
-fn eval_ast(a: Ast) -> EvalResult {
-    match a {
-        Ast::Scalar(_, _, ScalarKind::Plain, ref s)
-        if BOOL_TRUE_VALUES.contains(&s.as_str()) => {
-            Ok(EvalOk::Bool(true))
+fn eval_eq(a1: &EvalResult, a2: &EvalResult, negate: bool) -> EvalResult {
+    use self::EvalOk::*;
+    use self::EvalErr::*;
+
+    match (&a1, &a2) {
+        (Ok(a1), Ok(a2)) => {
+            let res = match (a1, a2) {
+                (Bool(v1), Bool(v2)) => v1 == v2,
+                (Int(v1), Int(v2)) => v1 == v2,
+                (Float(v1), Float(v2)) => v1 == v2,
+                (Str(v1), Str(v2)) => v1 == v2,
+                (t1, t2) => return Err(IncomparableTypes(
+                    t1.type_name().to_string(),
+                    t2.type_name().to_string()
+                )),
+            };
+            Ok(Bool(if negate { !res } else { res }))
         },
-        Ast::Scalar(_, _, ScalarKind::Plain, s)
-        if BOOL_FALSE_VALUES.contains(&s.as_str()) => {
-            Ok(EvalOk::Bool(false))
-        },
-        Ast::Scalar(_, _, ScalarKind::Plain, s)
+        (Err(e), _) | (_, Err(e)) => Err(e.clone()),
     }
 }
 
+fn eval_plain_scalar(v: &str) -> EvalResult {
+    use self::EvalOk::*;
 
+    if BOOL_TRUE_VALUES.contains(&v) {
+        Ok(Bool(true))
+    } else if BOOL_FALSE_VALUES.contains(&v) {
+        Ok(Bool(false))
+    } else if let Ok(n) = v.parse::<i64>() {
+        Ok(Int(n))
+    } else if let Ok(n) = v.parse::<f64>() {
+        Ok(Float(n))
+    } else {
+        Ok(Str(v.to_string()))
+    }
+}
 
 fn required_num_args(fun: &TestFun, args: &Vec<EvalResult>, req_len: usize) -> Result<(), EvalErr> {
     if args.len() != req_len {
-        return Err(EvalErr::NumArgs(format!(
+        return Err(EvalErr::InvalidNumArgs(format!(
             "{:?} takes 1 argument, {} given", fun, args.len()
         )));
     }
@@ -184,7 +261,7 @@ fn follow_ast<'a>(ast: &'a Ast, scope: &'a str, var_path: &[String])
         cur_node = match map.get(p) {
             Some(v) => v,
             None => return Result::Err(EvalErr::MissingVar(format!(
-                "Missing key: {}.{}", scope, var_path[..ix+1].join(".")
+                "{}.{}", scope, var_path[..ix+1].join(".")
             ))),
         };
     }

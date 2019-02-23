@@ -2,11 +2,11 @@ use std::error::Error as StdError;
 use std::str::FromStr;
 
 use failure::{self, Fail, Compat, format_err};
-//use failure_derive::Fail;
 
 use combine::{ParseError, Parser, Stream};
-use combine::{between, eof, one_of, many, many1, not_followed_by, satisfy,
+use combine::{between, choice, eof, one_of, many, many1, not_followed_by, satisfy,
               sep_by, sep_by1, skip_many, skip_many1, token};
+use combine::error::UnexpectedParse;
 use combine::parser::char::{alpha_num, space, string};
 use combine::parser::combinator::{attempt, recognize};
 use combine::parser::range::take_while1;
@@ -42,6 +42,20 @@ pub enum TestFun {
     Defined,
     Undefined,
     Eq,
+    NotEq,
+}
+
+impl TestFun {
+    pub fn negate(&self) -> TestFun {
+        use self::TestFun::*;
+
+        match self {
+            Defined => Undefined,
+            Undefined => Defined,
+            Eq => NotEq,
+            NotEq => Eq,
+        }
+    }
 }
 
 impl FromStr for TestFun {
@@ -121,6 +135,32 @@ fn test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
         .and_then(|s| s.parse())
 }
 
+fn negated_test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+        <<I as StreamOnce>::Error as
+        ParseError<
+            char,
+            <I as StreamOnce>::Range,
+            <I as StreamOnce>::Position
+        >
+        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
+        <I as StreamOnce>::Error: ParseError<
+            char,
+            <I as StreamOnce>::Range,
+            <I as StreamOnce>::Position
+        >
+{
+    (
+        string("not"),
+        whitespace(),
+        many1::<String, _>(alpha_num())
+            .and_then(|s| s.parse())
+    )
+        .map(|(_, _, fun): (_, _, TestFun)| fun.negate())
+}
+
 fn var_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
     where
         I: Stream<Item = char>,
@@ -144,6 +184,17 @@ fn is_operator_expr<I>() -> impl Parser<Output = OperatorFirstArg, Input = I>
         .map(|(var, _, _, _)| OperatorFirstArg(var))
 }
 
+fn op_expr<I>() -> impl Parser<Output = TestFun, Input = I>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    choice((
+        string("==").map(|_| TestFun::Eq),
+        string("!=").map(|_| TestFun::NotEq),
+    ))
+}
+
 fn eq_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
     where
         I: Stream<Item = char>,
@@ -151,11 +202,11 @@ fn eq_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
 {
     (
         var_path_expr().skip(skip_whitespaces()),
-        string("==").skip(skip_whitespaces()),
+        op_expr().skip(skip_whitespaces()),
         var_path_expr(),
     )
-        .map(|(arg1, _, arg2)| {
-            SubstExpr::Test {fun: TestFun::Eq, args: vec!(arg1, arg2)}
+        .map(|(arg1, fun, arg2)| {
+            SubstExpr::Test {fun, args: vec!(arg1, arg2)}
         })
 }
 
@@ -178,7 +229,10 @@ fn test_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
 {
     (
         is_operator_expr(),
-        test_fun_expr(),
+        choice((
+            attempt(negated_test_fun_expr()),
+            attempt(test_fun_expr()),
+        ))
     )
         .map(|(first_arg, fun)| SubstExpr::Test {fun, args: vec!(first_arg.0)})
 }
@@ -233,7 +287,10 @@ fn test_with_args_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
 {
     (
         is_operator_expr(),
-        test_fun_expr(),
+        choice((
+            attempt(negated_test_fun_expr()),
+            attempt(test_fun_expr()),
+        )),
         fun_args_expr(),
     )
         .map(|(first_arg, fun, rest_args)| {
@@ -260,10 +317,12 @@ fn subst_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
             <I as StreamOnce>::Position
         >
 {
-    attempt(test_with_args_expr())
-        .or(attempt(test_expr()))
-        .or(attempt(eq_expr()))
-        .or(var_expr())
+    choice((
+        attempt(test_with_args_expr()),
+        attempt(test_expr()),
+        attempt(eq_expr()),
+        attempt(var_expr()),
+    ))
 }
 
 fn subst_part_expr<I>() -> impl Parser<Input = I, Output = TemplatePart>
@@ -304,7 +363,7 @@ fn gap<I>() -> impl Parser<Output = TemplatePart, Input = I>
         .map(|s| TemplatePart::Gap(s))
 }
 
-pub fn template<I>() -> impl Parser<Input = I, Output = Vec<TemplatePart>>
+pub(crate) fn template_parser<I>() -> impl Parser<Input = I, Output = Vec<TemplatePart>>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
@@ -480,6 +539,20 @@ mod tests {
             ]
             && input == ""
         );
+        assert_matches!(
+            subst_expr().easy_parse("a != b"),
+            Ok((
+                SubstExpr::Test {
+                    fun: TestFun::NotEq,
+                    ref args,
+                },
+                input
+            )) if args == &[
+                Arg::Var(vec!("a".to_string())),
+                Arg::Var(vec!("b".to_string())),
+            ]
+            && input == ""
+        );
     }
 
 //    #[test]
@@ -579,18 +652,18 @@ mod tests {
     }
 
     #[test]
-    fn test_template() {
-        use super::template;
+    fn test_template_parser() {
+        use super::template_parser;
 
         assert_matches!(
-            template().easy_parse(State::new("")),
+            template_parser().easy_parse(State::new("")),
             Ok((
                 ref parts,
                 State { input, .. }
             )) if parts == &[] && input == ""
         );
         assert_matches!(
-            template().easy_parse(State::new("abc")),
+            template_parser().easy_parse(State::new("abc")),
             Ok((
                 ref parts,
                 State { input, .. }
@@ -601,7 +674,7 @@ mod tests {
 
         let var_path = vec!("abc".to_string());
         assert_matches!(
-            template().easy_parse(State::new("${{abc}}")),
+            template_parser().easy_parse(State::new("${{abc}}")),
             Ok((
                 ref parts,
                 State { input, .. }

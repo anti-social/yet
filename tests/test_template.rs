@@ -71,7 +71,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
             let mut buf = Vec::<u8>::new();
             match result.get("multi-doc") {
                 Some(_) => {
-                    let result_ast = Ast::Seq(mk_fake_pos(), Tag::NonSpecific, rendered_docs);
+                    let result_ast = dbg!(Ast::Seq(mk_fake_pos(), Tag::NonSpecific, rendered_docs));
                     emit_ast(&result_ast, &mut buf)?;
                 },
                 None => {
@@ -85,7 +85,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
 
             assert_eq!(
                 output,
-                expected_output
+                expected_output,
             );
         } else if let Some(err_res) = result.get("err") {
             let expected_msg = match err_res {
@@ -103,7 +103,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
                 Err(e) => {
                     assert_eq!(
                         &format!("{}", e),
-                        expected_msg
+                        expected_msg,
                     );
                 }
             }
@@ -124,6 +124,7 @@ fn test_all_specs() -> Result<(), failure::Error> {
         let test_file_path = entry?.path();
         if !test_file_path.is_file() { continue }
 
+        println!("Testing file: {:?}", &test_file_path);
         test_file(test_file_path)?;
     }
 

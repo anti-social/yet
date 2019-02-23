@@ -1,0 +1,18 @@
+---
+commands: !*If
+  condition: ${{ values.suite is not eq(env.suite) }}
+  then: ${{ values.test-commands }}
+
+---
+env:
+  suite: integ
+values:
+  suite: unit
+  test-commands:
+  - build
+  - unit
+result:
+  ok:
+    commands:
+    - build
+    - unit

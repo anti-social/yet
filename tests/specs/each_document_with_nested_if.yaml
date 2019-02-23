@@ -1,0 +1,36 @@
+---
+!*EachDocument
+items: ${{ values.services }}
+bind: service
+loop: !*If
+  condition: ${{ service.group is eq(env.group) }}
+  then:
+    kind: Deployment
+    metadata:
+      name: ${{values.project.name}}-${{service.name}}
+
+---
+env:
+  group: web
+values:
+  project:
+    name: test
+  services:
+  - name: web
+    group: web
+    memory: 512m
+  - name: grpc
+    group: web
+    memory: 256m
+  - name: celery
+    group: task
+    memory: 1g
+result:
+  multi-doc: true
+  ok:
+  - kind: Deployment
+    metadata:
+      name: test-web
+  - kind: Deployment
+    metadata:
+      name: test-grpc

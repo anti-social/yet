@@ -1,0 +1,29 @@
+---
+commands: !*If
+  condition: ${{ values.with-tests is defined }}
+  then: ${{ values.test-commands }}
+  else:
+  - build
+
+---
+values:
+  with-tests: false
+  test-commands:
+  - build
+  - unit
+  - integ
+result:
+  ok:
+    commands:
+    - build
+    - unit
+    - integ
+
+---
+values:
+  test-commands:
+  - integ
+result:
+  ok:
+    commands:
+    - build
