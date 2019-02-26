@@ -3,15 +3,16 @@ use std::str::FromStr;
 
 use failure::{self, Fail, Compat, format_err};
 
-use combine::{ParseError, Parser, Stream};
-use combine::{between, choice, eof, one_of, many, many1, not_followed_by, satisfy,
-              sep_by, sep_by1, skip_many, skip_many1, token};
-use combine::error::UnexpectedParse;
-use combine::parser::char::{alpha_num, space, string};
+use combine::{parser as combine_parser, Parser, ParseError, Stream};
+use combine::{any, between, choice, eof, optional, one_of, many, many1,
+              not_followed_by, satisfy, satisfy_map, sep_by, sep_by1, skip_many,
+              skip_many1, token};
+use combine::error::{Consumed, StreamError, UnexpectedParse};
+use combine::parser::char::{alpha_num, char, digit, space, spaces, string};
 use combine::parser::combinator::{attempt, recognize};
 use combine::parser::range::take_while1;
 use combine::parser::repeat::escaped;
-use combine::stream::{Range, RangeStreamOnce, StreamOnce};
+use combine::stream::{Range, RangeStream, RangeStreamOnce, StreamOnce, StreamErrorFor};
 
 #[derive(Debug, PartialEq)]
 pub enum TemplatePart {
@@ -22,10 +23,10 @@ pub enum TemplatePart {
 #[derive(Debug, PartialEq)]
 pub enum Arg {
     Var(Vec<String>),
-//    Str(String),
-//    Int(i64),
-//    Float(f64),
-//    Bool(bool),
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
 }
 
 #[derive(Debug, Fail)]
@@ -81,7 +82,120 @@ pub enum SubstExpr {
     Test { fun: TestFun, args: Vec<Arg> },
 }
 
-fn var_name_expr<I>() -> impl Parser<Output = String, Input = I>
+fn lex<P>(p: P) -> impl Parser<Input = P::Input, Output = P::Output>
+    where
+        P: Parser,
+        P::Input: Stream<Item = char>,
+        <P::Input as StreamOnce>::Error: ParseError<
+            <P::Input as StreamOnce>::Item,
+            <P::Input as StreamOnce>::Range,
+            <P::Input as StreamOnce>::Position,
+        >,
+{
+    p.skip(spaces())
+}
+
+fn integer<I>() -> impl Parser<Input = I, Output = i64>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    lex(many1(digit()))
+        .map(|s: String| {
+            let mut n = 0;
+            for c in s.chars() {
+                n = n * 10 + (c as i64 - '0' as i64);
+            }
+            n
+        })
+        .expected("integer")
+}
+
+fn float<I>() -> impl Parser<Input = I, Output = f64>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    let i = char('0').map(|_| 0.0).or(integer().map(|x| x as f64));
+    let fractional = many(digit()).map(|digits: String| {
+        let mut magnitude = 1.0;
+        digits.chars().fold(0.0, |acc, d| {
+            magnitude /= 10.0;
+            match d.to_digit(10) {
+                Some(d) => acc + (d as f64) * magnitude,
+                None => panic!("Not a digit"),
+            }
+        })
+    });
+
+    let exp = satisfy(|c| c == 'e' || c == 'E').with(optional(char('-')).and(integer()));
+    lex(optional(char('-'))
+        .and(i)
+        .map(|(sign, n)| if sign.is_some() { -n } else { n })
+        .and(optional(char('.')).with(fractional))
+        .map(|(x, y)| if x >= 0.0 { x + y } else { x - y })
+        .and(optional(exp))
+        .map(|(n, exp_option)| match exp_option {
+            Some((sign, e)) => {
+                let e = if sign.is_some() { -e } else { e };
+                n * 10.0f64.powi(e as i32)
+            }
+            None => n,
+        }))
+        .expected("number")
+}
+
+fn boolean<I>() -> impl Parser<Input = I, Output = bool>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    choice((
+        lex(string("true").map(|_| true)),
+        lex(string("false").map(|_| false)),
+    ))
+}
+
+fn string_char<I>() -> impl Parser<Input = I, Output = char>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    combine_parser(|input: &mut I| {
+        let mut back_slash_char = satisfy_map(|c| {
+            Some(match c {
+                '"' => '"',
+                '\\' => '\\',
+                '/' => '/',
+                'b' => '\u{0008}',
+                'f' => '\u{000c}',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                _ => return None,
+            })
+        });
+
+        let char_res: Result<_, _> = any().parse_lazy(input).into();
+        let (c, consumed) = char_res?;
+        match c {
+            '\\' => consumed.combine(|_| back_slash_char.parse_stream(input)),
+            '"' => Err(Consumed::Empty(I::Error::empty(input.position()).into())),
+            _ => Ok((c, consumed)),
+        }
+    })
+}
+
+fn string_expr<I>() -> impl Parser<Input = I, Output = String>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+    between(char('"'), lex(char('"')), many(string_char()))
+        .expected("string")
+}
+
+fn var_name<I>() -> impl Parser<Output = String, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
@@ -89,13 +203,13 @@ fn var_name_expr<I>() -> impl Parser<Output = String, Input = I>
     many1(alpha_num().or(satisfy(|c| c == '-' || c == '_')))
 }
 
-fn var_path_expr<I>() -> impl Parser<Output = Arg, Input = I>
+fn var_path<I>() -> impl Parser<Output = Arg, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
-    sep_by(var_name_expr(), token('.'))
-        .map(|path| Arg::Var(path))
+    sep_by(var_name(), token('.'))
+        .map(Arg::Var)
 }
 
 fn whitespace<I>() -> impl Parser<Input = I>
@@ -114,49 +228,81 @@ fn skip_whitespaces<I>() -> impl Parser<Input = I>
     skip_many(space())
 }
 
+//fn test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
+//    where
+//        I: Stream<Item = char>,
+//        I::Error: ParseError<I::Item, I::Range, I::Position>,
+//        <<I as StreamOnce>::Error as
+//            ParseError<
+//                char,
+//                <I as StreamOnce>::Range,
+//                <I as StreamOnce>::Position
+//            >
+//        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
+//        <I as StreamOnce>::Error: ParseError<
+//            char,
+//            <I as StreamOnce>::Range,
+//            <I as StreamOnce>::Position
+//        >
+//{
+//    many1::<String, _>(alpha_num())
+//        .and_then(|s| s.parse())
+//}
+
+//    /// `[I]` represents a normal type parameters and lifetime declaration for the function
+//    /// It gets expanded to `<I>`
+//    fn integer_ex[I]()(I) -> i32
+//    where [
+//        I: Stream<Item = char>,
+//        I::Error: ParseError<char, I::Range, I::Position>,
+//        <I::Error as ParseError<I::Item, I::Range, I::Position>>::StreamError:
+//            From<::std::num::ParseIntError>,
+//    ]
+//    {
+//        // The body must be a block body ( `{ <block body> }`) which ends with an expression
+//        // which evaluates to a parser
+//        from_str(many1::<String, _>(digit()))
+//    }
+//}
+
+//parser!{
+//    fn test_fun_expr2[I]()(I) -> String
+//    where [ I: Stream<Item = char>, ]
+//    {
+//        many1(letter()).and_then(|word: String| {
+//            if word == "combine" {
+//                Ok(word)
+//            } else {
+//                // The alias makes it easy to refer to the `StreamError` type of `I`
+//                Err(StreamErrorFor::<I>::expected_static_message("combine"))
+//            }
+//        })
+//    }
+//}
+
 fn test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
-        <<I as StreamOnce>::Error as
-            ParseError<
-                char,
-                <I as StreamOnce>::Range,
-                <I as StreamOnce>::Position
-            >
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
 {
     many1::<String, _>(alpha_num())
-        .and_then(|s| s.parse())
+        .and_then(|s| {
+            s.parse()
+                .map_err(|e| StreamErrorFor::<I>::expected_static_message(
+                    "one of test function"
+                ))
+        })
 }
 
 fn negated_test_fun_expr<I>() -> impl Parser<Output = TestFun, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
-        <<I as StreamOnce>::Error as
-        ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
 {
     (
         string("not"),
         whitespace(),
-        many1::<String, _>(alpha_num())
-            .and_then(|s| s.parse())
+        test_fun_expr(),
     )
         .map(|(_, _, fun): (_, _, TestFun)| fun.negate())
 }
@@ -166,8 +312,8 @@ fn var_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
-    var_path_expr()
-        .map(|var| SubstExpr::Var(var))
+    var_path()
+        .map(SubstExpr::Var)
 }
 
 fn is_operator_expr<I>() -> impl Parser<Output = OperatorFirstArg, Input = I>
@@ -176,12 +322,12 @@ fn is_operator_expr<I>() -> impl Parser<Output = OperatorFirstArg, Input = I>
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
-        var_path_expr(),
+        arg_expr(),
         whitespace(),
         string("is"),
         whitespace(),
     )
-        .map(|(var, _, _, _)| OperatorFirstArg(var))
+        .map(|(arg, _, _, _)| OperatorFirstArg(arg))
 }
 
 fn op_expr<I>() -> impl Parser<Output = TestFun, Input = I>
@@ -201,9 +347,9 @@ fn eq_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
-        var_path_expr().skip(skip_whitespaces()),
+        var_path().skip(skip_whitespaces()),
         op_expr().skip(skip_whitespaces()),
-        var_path_expr(),
+        arg_expr(),
     )
         .map(|(arg1, fun, arg2)| {
             SubstExpr::Test {fun, args: vec!(arg1, arg2)}
@@ -214,18 +360,6 @@ fn test_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
-        <<I as StreamOnce>::Error as
-            ParseError<
-                char,
-                <I as StreamOnce>::Range,
-                <I as StreamOnce>::Position
-            >
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
 {
     (
         is_operator_expr(),
@@ -242,7 +376,13 @@ fn arg_expr<I>() -> impl Parser<Output = Arg, Input = I>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>
 {
-    var_path_expr()
+    choice((
+        float().map(Arg::Float),
+        integer().map(Arg::Int),
+        boolean().map(Arg::Bool),
+        string_expr().map(Arg::Str),
+        var_path(),
+    ))
 }
 
 fn args_expr<I>() -> impl Parser<Output = Vec<Arg>, Input = I>
@@ -272,18 +412,6 @@ fn test_with_args_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
-        <<I as StreamOnce>::Error as
-        ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
 {
     (
         is_operator_expr(),
@@ -304,18 +432,6 @@ fn subst_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
-        <<I as StreamOnce>::Error as
-            ParseError<
-                char,
-                <I as StreamOnce>::Range,
-                <I as StreamOnce>::Position
-            >
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
 {
     choice((
         attempt(test_with_args_expr()),
@@ -329,18 +445,6 @@ fn subst_part_expr<I>() -> impl Parser<Input = I, Output = TemplatePart>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
-        <<I as StreamOnce>::Error as
-            ParseError<
-                char,
-                <I as StreamOnce>::Range,
-                <I as StreamOnce>::Position
-            >
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char,
-            <I as StreamOnce>::Range,
-            <I as StreamOnce>::Position
-        >
 {
     between(
         string("${{").skip(skip_whitespaces()),
@@ -369,12 +473,6 @@ pub(crate) fn template_parser<I>() -> impl Parser<Input = I, Output = Vec<Templa
         I::Error: ParseError<I::Item, I::Range, I::Position>,
         I: RangeStreamOnce,
         <I as StreamOnce>::Range: Range,
-        <<I as StreamOnce>::Error as ParseError<
-            char, <I as StreamOnce>::Range, <I as StreamOnce>::Position>
-        >::StreamError: std::convert::From<failure::Compat<ParseSubstitutionError>>,
-        <I as StreamOnce>::Error: ParseError<
-            char, <I as StreamOnce>::Range, <I as StreamOnce>::Position
-        >,
 {
     many(
         subst_part_expr().or(not_followed_by(eof().map(|_| "")).with(gap()))
@@ -394,27 +492,45 @@ mod tests {
     use super::{Arg, ParseSubstitutionError, TemplatePart, SubstExpr, TestFun};
 
     #[test]
-    fn test_var_name_parser() {
-        use super::var_name_expr;
+    fn test_string_expr() {
+        use super::string_expr;
 
         assert_eq!(
-            var_name_expr().parse(""),
+            string_expr().parse("\"\""),
+            Ok(("".to_string(), ""))
+        );
+        assert_eq!(
+            string_expr().parse("\"123\""),
+            Ok(("123".to_string(), ""))
+        );
+        assert_eq!(
+            string_expr().parse("\"\\\"\""),
+            Ok(("\"".to_string(), ""))
+        );
+    }
+
+    #[test]
+    fn test_var_name_parser() {
+        use super::var_name;
+
+        assert_eq!(
+            var_name().parse(""),
             Err(StringStreamError::UnexpectedParse)
         );
         assert_eq!(
-            var_name_expr().parse("a"),
+            var_name().parse("a"),
             Ok(("a".to_string(), ""))
         );
         assert_eq!(
-            var_name_expr().parse("a."),
+            var_name().parse("a."),
             Ok(("a".to_string(), "."))
         );
         assert_eq!(
-            var_name_expr().parse("1"),
+            var_name().parse("1"),
             Ok(("1".to_string(), ""))
         );
         assert_eq!(
-            var_name_expr().parse("a_1-b_2"),
+            var_name().parse("a_1-b_2"),
             Ok(("a_1-b_2".to_string(), ""))
         );
     }

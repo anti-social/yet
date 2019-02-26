@@ -1,0 +1,12 @@
+---
+command: !*If
+  condition: ${{ env.suite == "integ" }}
+  then: pytest integ_tests
+  else: pytest tests
+
+---
+env:
+  suite: integ
+result:
+  ok:
+    command: pytest integ_tests

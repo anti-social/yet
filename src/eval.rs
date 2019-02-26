@@ -119,6 +119,10 @@ impl Eval for SubstExpr {
         use self::EvalErr::*;
 
         let res = match arg {
+            Arg::Int(i) => Ok(Int(*i)),
+            Arg::Float(f) => Ok(Float(*f)),
+            Arg::Bool(b) => Ok(Bool(*b)),
+            Arg::Str(s) => Ok(Str(s.clone())),
             Arg::Var(var_path) => match var_path.split_first() {
                 Some((scope, path)) if scope == VALUES_SCOPE => {
                     match ctx.values {
@@ -210,7 +214,7 @@ fn eval_eq(a1: &EvalResult, a2: &EvalResult, negate: bool) -> EvalResult {
                 (Bool(v1), Bool(v2)) => v1 == v2,
                 (Int(v1), Int(v2)) => v1 == v2,
                 (Float(v1), Float(v2)) => v1 == v2,
-                (Str(v1), Str(v2)) => v1 == v2,
+                (Str(v1), Str(v2)) => dbg!(v1 == v2),
                 (t1, t2) => return Err(IncomparableTypes(
                     t1.type_name().to_string(),
                     t2.type_name().to_string()

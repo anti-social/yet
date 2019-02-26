@@ -377,6 +377,7 @@ fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &
     match (kind, template_parts.split_first()) {
         (ScalarKind::Plain, Some((TemplatePart::Subst(expr), rest)))
         if rest.len() == 0 => {
+            dbg!(expr);
             return Ok(expr.eval(ctx)?.into_ast());
         }
         _ => {}

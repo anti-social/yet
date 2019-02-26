@@ -1,5 +1,8 @@
 extern crate failure_derive;
 
+#[macro_use]
+extern crate combine;
+
 mod constructs;
 mod eval;
 mod util;
