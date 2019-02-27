@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use failure::{self, Fail, Compat, format_err};
 
-use combine::{parser as combine_parser, Parser, ParseError, Stream};
+use combine::{parser, Parser, ParseError, Stream};
 use combine::{any, between, choice, eof, optional, one_of, many, many1,
               not_followed_by, satisfy, satisfy_map, sep_by, sep_by1, skip_many,
               skip_many1, token};
@@ -77,9 +77,16 @@ impl FromStr for TestFun {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum BoolOp {
+    And,
+    Or,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum SubstExpr {
     Var(Arg),
     Test { fun: TestFun, args: Vec<Arg> },
+    Bool { op: BoolOp, args: Vec<SubstExpr> },
 }
 
 fn lex<P>(p: P) -> impl Parser<Input = P::Input, Output = P::Output>
@@ -169,7 +176,7 @@ fn chr<I>() -> impl Parser<Input = I, Output = char>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    combine_parser(|input: &mut I| {
+    parser(|input: &mut I| {
         let mut back_slash_char = satisfy_map(|c| {
             Some(match c {
                 '"' => '"',
@@ -284,7 +291,7 @@ fn negated_test_fun<I>() -> impl Parser<Output = TestFun, Input = I>
         .map(|(_, _, fun): (_, _, TestFun)| fun.negate())
 }
 
-fn first_arg_and_is_operator<I>() -> impl Parser<Output = OperatorFirstArg, Input = I>
+fn arg_followed_by_is<I>() -> impl Parser<Output = OperatorFirstArg, Input = I>
     where
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
@@ -330,7 +337,7 @@ fn test_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
-        first_arg_and_is_operator(),
+        arg_followed_by_is(),
         choice((
             attempt(negated_test_fun()),
             attempt(test_fun()),
@@ -345,7 +352,7 @@ fn test_with_args<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
     (
-        first_arg_and_is_operator(),
+        arg_followed_by_is(),
         choice((
             attempt(negated_test_fun()),
             attempt(test_fun()),
@@ -364,13 +371,88 @@ fn subst_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         I: Stream<Item = char>,
         I::Error: ParseError<I::Item, I::Range, I::Position>,
 {
-    choice((
-        attempt(test_with_args()),
-        attempt(test_expr()),
-        attempt(test_op_expr()),
-        attempt(arg().map(SubstExpr::Var)),
-    ))
+        choice((
+            attempt(test_with_args()),
+            attempt(test_expr()),
+            attempt(test_op_expr()),
+            attempt(arg().map(SubstExpr::Var)),
+        ))
 }
+
+fn complex_subst_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
+    where
+        I: Stream<Item = char>,
+        I::Error: ParseError<I::Item, I::Range, I::Position>,
+{
+//    let subst_expr_parser = subst_expr();
+
+    parser(|input: &mut I| {
+        let mut expr_stack = vec!();
+        let mut op_stack = vec!();
+//        let mut back_slash_char = satisfy_map(|c| {
+//            Some(match c {
+//                '"' => '"',
+//                '\\' => '\\',
+//                '/' => '/',
+//                'b' => '\u{0008}',
+//                'f' => '\u{000c}',
+//                'n' => '\n',
+//                'r' => '\r',
+//                't' => '\t',
+//                _ => return None,
+//            })
+//        });
+
+        loop {
+            let subst_expr_res: Result<_, _> = subst_expr().parse_lazy(input).into();
+            let (expr, consumed) = subst_expr_res?;
+            expr_stack.push(expr);
+
+            let bool_op_res: Result<(BoolOp, _), _> = (
+                whitespace(),
+                string("or"),
+                whitespace(),
+            )
+                .map(|(_, _, _)| BoolOp::Or)
+                .parse_lazy(input).into();
+            let (bool_op, consumed) = bool_op_res?;
+
+            op_stack.push(bool_op);
+        }
+        Err(Consumed::Empty(I::Error::empty(input.position()).into()))
+//        match expr {
+//
+//            '\\' => consumed.combine(|_| back_slash_char.parse_stream(input)),
+//            '"' => Err(Consumed::Empty(I::Error::empty(input.position()).into())),
+//            _ => Ok((c, consumed)),
+//        }
+    })
+}
+
+//parser! {
+//    #[inline(always)]
+//    fn complex_subst_expr[I]()(I) -> SubstExpr
+//        where [ I: Stream<Item = char> ]
+//    {
+//        let bool_expr = (
+//            subst_expr(),
+//            whitespace(),
+//            string("or"),
+//            subst_expr(),
+//        )
+//            .map(|(expr1, _, _, expr2)| {
+//                SubstExpr::Bool { op: BoolOp::Or, args: vec!() }
+//            });
+//
+//        choice((
+//            attempt(test_with_args()),
+//            attempt(test_expr()),
+//            attempt(test_op_expr()),
+//            attempt(arg().map(SubstExpr::Var)),
+//            attempt(bool_expr),
+//        ))
+//    }
+//}
 
 fn subst_part<I>() -> impl Parser<Input = I, Output = TemplatePart>
     where

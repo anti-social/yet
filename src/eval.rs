@@ -111,6 +111,9 @@ impl Eval for SubstExpr {
                 let args = args.iter().map(|a| self.eval_arg(ctx, a)).collect();
                 self.eval_expr(ctx, fun, &args)
             },
+            SubstExpr::Bool {..} => {
+                unimplemented!()
+            }
         }
     }
 
