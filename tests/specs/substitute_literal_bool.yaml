@@ -1,0 +1,11 @@
+---
+are-you-ready: ${{true}}
+nope: ${{false}}
+true-is-false: ${{true}} is ${{false}}
+
+---
+result:
+  ok:
+    are-you-ready: true
+    nope: false
+    true-is-false: true is false

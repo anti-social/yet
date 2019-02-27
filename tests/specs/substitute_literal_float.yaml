@@ -1,0 +1,11 @@
+---
+one: ${{1.}}
+two: ${{2.0}}
+one-plus-two: ${{ 1.e0 }} + ${{ 2.00 }} = ${{ 3 }}
+
+---
+result:
+  ok:
+    one: 1
+    two: 2
+    one-plus-two: 1 + 2 = 3

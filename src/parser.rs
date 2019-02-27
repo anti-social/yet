@@ -284,15 +284,6 @@ fn negated_test_fun<I>() -> impl Parser<Output = TestFun, Input = I>
         .map(|(_, _, fun): (_, _, TestFun)| fun.negate())
 }
 
-fn var<I>() -> impl Parser<Output = SubstExpr, Input = I>
-    where
-        I: Stream<Item = char>,
-        I::Error: ParseError<I::Item, I::Range, I::Position>
-{
-    var_path()
-        .map(SubstExpr::Var)
-}
-
 fn first_arg_and_is_operator<I>() -> impl Parser<Output = OperatorFirstArg, Input = I>
     where
         I: Stream<Item = char>,
@@ -377,7 +368,7 @@ fn subst_expr<I>() -> impl Parser<Output = SubstExpr, Input = I>
         attempt(test_with_args()),
         attempt(test_expr()),
         attempt(test_op_expr()),
-        attempt(var()),
+        attempt(arg().map(SubstExpr::Var)),
     ))
 }
 

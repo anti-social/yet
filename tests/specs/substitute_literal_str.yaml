@@ -1,0 +1,11 @@
+---
+one: ${{"one"}}
+two: ${{"two"}}
+one-plus-two: ${{ "one" }} + ${{ "two" }} = ${{ "three" }}
+
+---
+result:
+  ok:
+    one: one
+    two: two
+    one-plus-two: one + two = three
