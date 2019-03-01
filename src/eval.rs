@@ -7,9 +7,11 @@ use quire::ast::Ast;
 use quire::ast::Tag;
 use quire::ast::ScalarKind;
 
-use crate::parser::{Arg, SubstExpr, TestFun};
+use crate::parser::{Arg, BoolOp, FilterFun, SubstExpr, TestFun};
 use crate::template::RenderContext;
 use crate::util::clone_ast;
+use std::fmt::Display;
+use std::fmt::Debug;
 
 pub static BOOL_TRUE_VALUES: &[&str] = &[
     "true", "TRUE", "True",
@@ -91,8 +93,12 @@ pub(crate) enum EvalErr {
     ExpectedMapping(String),
     #[fail(display = "invalid number of arguments: {}", 0)]
     InvalidNumArgs(String),
+    #[fail(display = "type error: {}", 0)]
+    TypeError(String),
     #[fail(display = "types cannot be compared: {}", 0)]
     IncomparableTypes(String, String),
+    #[fail(display = "required boolean type: {}", 0)]
+    NonBooleanTypes(String, String),
 }
 
 type EvalResult = Result<EvalOk, EvalErr>;
@@ -100,20 +106,46 @@ type EvalResult = Result<EvalOk, EvalErr>;
 pub(crate) trait Eval {
     fn eval(&self, ctx: &RenderContext) -> EvalResult;
     fn eval_arg(&self, ctx: &RenderContext, arg: &Arg) -> EvalResult;
-    fn eval_expr(&self, ctx: &RenderContext, fun: &TestFun, args: &Vec<EvalResult>) -> EvalResult;
+    fn eval_test_expr(&self, ctx: &RenderContext, fun: &TestFun, args: &Vec<EvalResult>) -> EvalResult;
+    fn eval_bool_op(&self, ctx: &RenderContext, op: &BoolOp, args: &Vec<EvalResult>) -> EvalResult;
+    fn eval_filter_expr(&self, ctx: &RenderContext, fun: &FilterFun, args: &Vec<EvalResult>) -> EvalResult;
 }
 
 impl Eval for SubstExpr {
     fn eval(&self, ctx: &RenderContext) -> EvalResult {
         match self {
-            SubstExpr::Var(var) => self.eval_arg(ctx, var),
-            SubstExpr::Test{fun, args} => {
-                let args = args.iter().map(|a| self.eval_arg(ctx, a)).collect();
-                self.eval_expr(ctx, fun, &args)
+            SubstExpr::Atom(var) => self.eval_arg(ctx, var),
+            SubstExpr::Test { fun, args } => {
+                let args = args.iter().map(|a| a.eval(ctx)).collect();
+                self.eval_test_expr(ctx, fun, &args)
             },
-            SubstExpr::Bool {..} => {
-                unimplemented!()
+            SubstExpr::Bool { op, args } => {
+                let args = args.iter().map(|a| a.eval(ctx)).collect();
+                self.eval_bool_op(ctx, op, &args)
+            },
+            SubstExpr::Filter { fun, args } => {
+                let args = args.iter().map(|a| a.eval(ctx)).collect();
+                self.eval_filter_expr(ctx, fun, &args)
             }
+        }
+    }
+
+    fn eval_bool_op(&self, ctx: &RenderContext, op: &BoolOp, args: &Vec<EvalResult>) -> EvalResult {
+        use self::EvalOk::*;
+        use self::EvalErr::*;
+
+        match op {
+            BoolOp::Or => {
+                required_num_args(op, args, 2)?;
+                match (&args[0], &args[1]) {
+                    (Ok(Bool(v1)), Ok(Bool(v2))) => Ok(Bool(*v1 || *v2)),
+                    (Ok(t1), Ok(t2)) => Err(NonBooleanTypes(
+                        t1.type_name().to_string(), t2.type_name().to_string())
+                    ),
+                    (Err(e), _) | (_, Err(e)) => Err(e.clone()),
+                }
+            }
+            _ => unimplemented!()
         }
     }
 
@@ -126,14 +158,14 @@ impl Eval for SubstExpr {
             Arg::Float(f) => Ok(Float(*f)),
             Arg::Bool(b) => Ok(Bool(*b)),
             Arg::Str(s) => Ok(Str(s.clone())),
-            Arg::Var(var_path) => match var_path.split_first() {
-                Some((scope, path)) if scope == VALUES_SCOPE => {
+            Arg::Var(var) => match var.split('.').collect::<Vec<_>>().split_first() {
+                Some((scope, path)) if scope == &VALUES_SCOPE => {
                     match ctx.values {
                         Some(values) => follow_ast(values, scope, path),
                         None => Err(MissingVar(VALUES_SCOPE.to_string()))
                     }
                 },
-                Some((scope, path)) if scope == ENV_SCOPE => {
+                Some((scope, path)) if scope == &ENV_SCOPE => {
                     let key = path.join(".");
                     match ctx.env.get(&key) {
                         Some(v) => Ok(Str(v.clone())),
@@ -143,7 +175,7 @@ impl Eval for SubstExpr {
                 Some((scope, path)) => {
                     let mut found_ast = None;
                     for scopes_frame in ctx.scopes_stack.borrow().iter().rev() {
-                        match scopes_frame.get(scope) {
+                        match scopes_frame.get(*scope) {
                             Some(scope_ast) => {
                                 found_ast = Some(
                                     follow_ast(scope_ast, scope, path)
@@ -172,7 +204,7 @@ impl Eval for SubstExpr {
         }
     }
 
-    fn eval_expr(&self, ctx: &RenderContext, fun: &TestFun, args: &Vec<EvalResult>)
+    fn eval_test_expr(&self, ctx: &RenderContext, fun: &TestFun, args: &Vec<EvalResult>)
         -> EvalResult
     {
         use self::EvalOk::*;
@@ -205,6 +237,32 @@ impl Eval for SubstExpr {
             }
         }
     }
+
+    fn eval_filter_expr(&self, ctx: &RenderContext, fun: &FilterFun, args: &Vec<EvalResult>)
+        -> EvalResult
+    {
+        use self::EvalOk::*;
+        use self::EvalErr::*;
+
+        match fun {
+            FilterFun::CapFirst => {
+                required_num_args(fun, args, 1)?;
+                cap_first(&args[0])
+            },
+            _ => unimplemented!(),
+        }
+    }
+}
+
+fn cap_first(a: &EvalResult) -> EvalResult {
+    use self::EvalOk::*;
+    use self::EvalErr::*;
+
+    match a {
+        Ok(Str(v)) => unimplemented!(),
+        Ok(_) => Err(TypeError("required a string".to_string())),
+        Err(e) => Err(e.clone()),
+    }
 }
 
 fn eval_eq(a1: &EvalResult, a2: &EvalResult, negate: bool) -> EvalResult {
@@ -217,7 +275,7 @@ fn eval_eq(a1: &EvalResult, a2: &EvalResult, negate: bool) -> EvalResult {
                 (Bool(v1), Bool(v2)) => v1 == v2,
                 (Int(v1), Int(v2)) => v1 == v2,
                 (Float(v1), Float(v2)) => v1 == v2,
-                (Str(v1), Str(v2)) => dbg!(v1 == v2),
+                (Str(v1), Str(v2)) => v1 == v2,
                 (t1, t2) => return Err(IncomparableTypes(
                     t1.type_name().to_string(),
                     t2.type_name().to_string()
@@ -245,7 +303,7 @@ fn eval_plain_scalar(v: &str) -> EvalResult {
     }
 }
 
-fn required_num_args(fun: &TestFun, args: &Vec<EvalResult>, req_len: usize) -> Result<(), EvalErr> {
+fn required_num_args(fun: &Debug, args: &Vec<EvalResult>, req_len: usize) -> Result<(), EvalErr> {
     if args.len() != req_len {
         return Err(EvalErr::InvalidNumArgs(format!(
             "{:?} takes 1 argument, {} given", fun, args.len()
@@ -254,7 +312,7 @@ fn required_num_args(fun: &TestFun, args: &Vec<EvalResult>, req_len: usize) -> R
     Ok(())
 }
 
-fn follow_ast<'a>(ast: &'a Ast, scope: &'a str, var_path: &[String])
+fn follow_ast<'a>(ast: &'a Ast, scope: &'a str, var_path: &[&str])
     -> EvalResult
 {
     let mut cur_node = ast;
@@ -265,7 +323,7 @@ fn follow_ast<'a>(ast: &'a Ast, scope: &'a str, var_path: &[String])
                 "{}.{}", scope, var_path.join(".")
             ))),
         };
-        cur_node = match map.get(p) {
+        cur_node = match map.get(*p) {
             Some(v) => v,
             None => return Result::Err(EvalErr::MissingVar(format!(
                 "{}.{}", scope, var_path[..ix+1].join(".")
@@ -297,7 +355,9 @@ mod tests {
     fn test_eval_defined_false() {
         let expr = SubstExpr::Test {
             fun: TestFun::Defined,
-            args: vec!(Arg::Var(vec!("env".to_string(), "UNDEFINED".to_string()))),
+            args: vec!(
+                SubstExpr::Atom(Arg::Var("env.UNDEFINED".to_string()))
+            ),
         };
         let env = get_test_env();
         let ctx = RenderContext::new(None, &env);
@@ -311,7 +371,9 @@ mod tests {
     fn test_eval_defined_true() {
         let expr = SubstExpr::Test {
             fun: TestFun::Defined,
-            args: vec!(Arg::Var(vec!("env".to_string(), "TEST".to_string()))),
+            args: vec!(
+                SubstExpr::Atom(Arg::Var("env.TEST".to_string()))
+            ),
         };
         let env = get_test_env();
         let ctx = RenderContext::new(None, &env);
@@ -326,8 +388,8 @@ mod tests {
         let expr = SubstExpr::Test {
             fun: TestFun::Eq,
             args: vec!(
-                Arg::Var(vec!("env".to_string(), "TEST".to_string())),
-                Arg::Var(vec!("env".to_string(), "TEST_EQ".to_string())),
+                SubstExpr::Atom(Arg::Var("env.TEST".to_string())),
+                SubstExpr::Atom(Arg::Var("env.TEST_EQ".to_string())),
             ),
         };
         let env = get_test_env();
@@ -343,8 +405,8 @@ mod tests {
         let expr = SubstExpr::Test {
             fun: TestFun::Eq,
             args: vec!(
-                Arg::Var(vec!("env".to_string(), "TEST".to_string())),
-                Arg::Var(vec!("env".to_string(), "TEST_NOT_EQ".to_string())),
+                SubstExpr::Atom(Arg::Var("env.TEST".to_string())),
+                SubstExpr::Atom(Arg::Var("env.TEST_NOT_EQ".to_string())),
             ),
         };
         let env = get_test_env();

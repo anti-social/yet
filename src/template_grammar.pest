@@ -1,0 +1,69 @@
+ws = _{ " " | "\t" | "\r" | "\n" }
+WHITESPACE = _{ ws }
+
+// Primitive values
+int = @{ ("+" | "-")? ~ ASCII_DIGIT+ ~ !("." | "e" | "E") }
+float = @{
+    ("+" | "-")?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+    ~ ("." ~ ASCII_DIGIT*)?
+    ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+value = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "-" | "_" | ".")* }
+bool = @{ ("true" | "false") ~ !ASCII_ALPHANUMERIC }
+string = ${ "\"" ~ str ~ "\"" }
+str = @{ char* }
+char = {
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+arg = { int | float | bool | string | value}
+
+// Filter functions
+fun_args = {
+    "(" ~ ")"
+    | "(" ~ filter_expr ~ ("," ~ filter_expr)* ~ ")"
+}
+filter_fun = @{
+    ("cap_first" | "lower" | "trim" | "truncate" | "upper")
+    ~ !ASCII_ALPHANUMERIC
+}
+pipe = _{ "|" }
+filter_expr = {
+    arg ~ (pipe ~ filter_fun ~ fun_args?)*
+}
+
+// Test functions
+test_fun = @{
+    ("defined" | "undefined" | "eq" | "equalto" | "ne")
+    ~ !ASCII_ALPHANUMERIC
+}
+test_op = { "==" | "!=" }
+is_op = @{ "is" ~ !ASCII_ALPHANUMERIC }
+not_op = @{ "not" ~ !ASCII_ALPHANUMERIC }
+test_expr = {
+    filter_expr ~ (is_op ~ not_op?) ~ test_fun ~ fun_args
+    | filter_expr ~ (is_op ~ not_op?) ~ test_fun
+    | filter_expr ~ test_op ~ filter_expr
+}
+
+// Bool expressions
+or_op = @{ "or" }
+and_op = @{ "and" }
+// bool_op = @{ (or_op | and_op) ~ !ASCII_ALPHANUMERIC }
+bool_expr = { paren_bool_expr | test_expr | filter_expr }
+paren_bool_expr = { "(" ~ expr ~ ")" }
+
+expr = !{
+    bool_expr ~ ((or_op | and_op) ~ bool_expr)*
+}
+
+subst_expr = @{ "${{" ~ ws* ~ expr ~ ws* ~ "}}" }
+
+gap = @{ gap_char* }
+gap_char = {
+  !("${{" | "\\") ~ ANY
+  | "\\" ~ ANY
+}
+template = ${ SOI ~ gap ~ (subst_expr ~ gap)* ~ EOI }

@@ -7,8 +7,6 @@ use std::path::Path;
 use std::rc::Rc;
 use std::result;
 
-use combine::stream::state::State;
-
 use failure::{self, Compat, format_err};
 use failure_derive::Fail;
 
@@ -21,8 +19,8 @@ use quire::ast::Tag;
 use crate::constructs::Each;
 use crate::eval::{BOOL_FALSE_VALUES, BOOL_TRUE_VALUES};
 use crate::eval::{Eval, EvalOk, EvalErr};
-use crate::parser::template_parser;
-use crate::parser::{ParseSubstitutionError, TemplatePart};
+use crate::parser::{self, TemplatePart};
+//use crate::parser::{ParseSubstitutionError, TemplatePart};
 use crate::util::{clone_ast, clone_null_kind, clone_scalar_kind, clone_tag};
 use crate::parser::SubstExpr;
 use crate::parser::Arg;
@@ -359,18 +357,8 @@ pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
 fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &ScalarKind)
     -> Result<Ast, failure::Error>
 {
-    use combine::Parser;
-
-    let parse_res = template_parser().easy_parse(State::new(tmpl))
+    let template_parts = parser::parse_template(tmpl)
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?;
-    let template_parts = match parse_res {
-        (_, State { input, .. }) if input.len() > 0 => {
-            return Err(format_err!("Non empty parse: {}", input));
-        }
-        (template_parts, _) => {
-            template_parts
-        }
-    };
 
     // Single plain (non-quoted) substitution can be an Ast node:
     // ${{values.map-or-list}}
@@ -385,6 +373,7 @@ fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &
 
     let mut rendered_tmpl = String::new();
     for p in &template_parts {
+        dbg!(p);
         match p {
             TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
             TemplatePart::Subst(expr) => {
@@ -395,7 +384,7 @@ fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &
                     Ast::Null(_, _, _) => {
                         rendered_tmpl.push_str("null");
                     },
-                    _ => {
+                    ast => {
                         return Err(format_err!(
                             "Can render into string only scalar value or null"
                         ));

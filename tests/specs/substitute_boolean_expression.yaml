@@ -1,0 +1,11 @@
+---
+real-true: ${{true or false}}
+also-true: ${{false or true}}
+but-false: ${{ false or false or false }}
+
+---
+result:
+  ok:
+    real-true: true
+    also-true: true
+    but-false: false
