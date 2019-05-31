@@ -365,7 +365,6 @@ fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &
     match (kind, template_parts.split_first()) {
         (ScalarKind::Plain, Some((TemplatePart::Subst(expr), rest)))
         if rest.len() == 0 => {
-            dbg!(expr);
             return Ok(expr.eval(ctx)?.into_ast());
         }
         _ => {}
@@ -373,7 +372,6 @@ fn process_scalar(ctx: &RenderContext, tmpl: &str, pos: &Pos, tag: &Tag, kind: &
 
     let mut rendered_tmpl = String::new();
     for p in &template_parts {
-        dbg!(p);
         match p {
             TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
             TemplatePart::Subst(expr) => {

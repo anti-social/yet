@@ -280,7 +280,7 @@ fn cap_first(args: &Vec<EvalResult>) -> EvalResult {
             let mut chars = s.chars();
             Ok(Str(match chars.next() {
                 None => String::new(),
-                Some(c) => dbg!(c.to_uppercase().to_string()) + chars.as_str(),
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
             }))
         },
         Ok(_) => Err(TypeError("required a string".to_string())),
@@ -321,7 +321,7 @@ fn trim(args: &Vec<EvalResult>) -> EvalResult {
     use self::EvalErr::*;
 
     required_num_args(&FilterFun::Lower, args, 1, 1)?;
-    match dbg!(&args[0]) {
+    match &args[0] {
         Ok(Str(s))
         | Ok(Node(Ast::Scalar(_, _, _, s))) => {
             Ok(Str(s.trim().to_string()))
@@ -337,7 +337,7 @@ fn truncate(args: &Vec<EvalResult>) -> EvalResult {
 
     required_num_args(&FilterFun::Lower, args, 2, 2)?;
     let mut args_iter = args.iter();
-    let mut s = match dbg!(args_iter.next().unwrap()) {
+    let mut s = match args_iter.next().unwrap() {
         Ok(Str(s)) | Ok(Node(Ast::Scalar(_, _, _, s))) => s,
         Ok(_) => return Err(TypeError("required a string".to_string())),
         Err(e) => return Err(e.clone()),

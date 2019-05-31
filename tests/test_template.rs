@@ -71,7 +71,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
             let mut buf = Vec::<u8>::new();
             match result.get("multi-doc") {
                 Some(_) => {
-                    let result_ast = dbg!(Ast::Seq(mk_fake_pos(), Tag::NonSpecific, rendered_docs));
+                    let result_ast = Ast::Seq(mk_fake_pos(), Tag::NonSpecific, rendered_docs);
                     emit_ast(&result_ast, &mut buf)?;
                 },
                 None => {

@@ -181,7 +181,6 @@ fn process_subst_expr(pairs: Pairs<Rule>) -> TemplateResult<TemplatePart> {
 }
 
 fn process_expr(pair: Pair<Rule>) -> TemplateResult<SubstExpr> {
-    dbg!(&pair);
     let climber = PrecClimber::new(vec!(
         Operator::new(Rule::or_op, Assoc::Left),
         Operator::new(Rule::and_op, Assoc::Left),
