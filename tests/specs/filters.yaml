@@ -1,0 +1,16 @@
+---
+test:
+  text: Hello, ${{values.title | upper}} ${{values.name | lower|cap_first}}!
+  actor: ${{ values.actor.full-name |trim |truncate(15)}}
+
+---
+values:
+  name: beaN
+  title: Mr.
+  actor:
+    full-name: "  Rowan Sebastian Atkinson "
+result:
+  ok:
+    test:
+      text: Hello, MR. Bean!
+      actor: Rowan Sebastian

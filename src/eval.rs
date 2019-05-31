@@ -1,3 +1,5 @@
+use std::convert::TryFrom;
+use std::fmt::{Debug, Display};
 use std::rc::Rc;
 
 use failure::Fail;
@@ -10,8 +12,7 @@ use quire::ast::ScalarKind;
 use crate::parser::{Arg, BoolOp, FilterFun, SubstExpr, TestFun};
 use crate::template::RenderContext;
 use crate::util::clone_ast;
-use std::fmt::Display;
-use std::fmt::Debug;
+use crate::parser::SubstExpr::Filter;
 
 pub static BOOL_TRUE_VALUES: &[&str] = &[
     "true", "TRUE", "True",
@@ -38,6 +39,21 @@ pub enum EvalOk {
 }
 
 impl EvalOk {
+    fn to_string(&self) -> EvalResult {
+        use self::EvalOk::*;
+        use self::EvalErr::*;
+
+        Ok(Str(match self {
+            Node(v) => {
+                return Err(TypeError(format!("Cannot convert yaml ast to string")));
+            },
+            Bool(v) => v.to_string(),
+            Int(v) => v.to_string(),
+            Float(v) => v.to_string(),
+            Str(v) => v.to_string(),
+        }))
+    }
+
     pub fn into_ast(self) -> Ast {
         use self::EvalOk::*;
 
@@ -136,7 +152,7 @@ impl Eval for SubstExpr {
 
         match op {
             BoolOp::Or => {
-                required_num_args(op, args, 2)?;
+                required_num_args(op, args, 2, 2)?;
                 match (&args[0], &args[1]) {
                     (Ok(Bool(v1)), Ok(Bool(v2))) => Ok(Bool(*v1 || *v2)),
                     (Ok(t1), Ok(t2)) => Err(NonBooleanTypes(
@@ -212,7 +228,7 @@ impl Eval for SubstExpr {
 
         match fun {
             TestFun::Defined => {
-                required_num_args(fun, args, 1)?;
+                required_num_args(fun, args, 1, 1)?;
                 match &args[0] {
                     Ok(_) => Ok(Bool(true)),
                     Err(MissingVar(_)) => Ok(Bool(false)),
@@ -220,7 +236,7 @@ impl Eval for SubstExpr {
                 }
             },
             TestFun::Undefined => {
-                required_num_args(fun, args, 1)?;
+                required_num_args(fun, args, 1, 1)?;
                 match &args[0] {
                     Ok(_) => Ok(Bool(false)),
                     Err(MissingVar(_)) => Ok(Bool(true)),
@@ -228,11 +244,11 @@ impl Eval for SubstExpr {
                 }
             },
             TestFun::Eq => {
-                required_num_args(fun, args, 2)?;
+                required_num_args(fun, args, 2, 2)?;
                 eval_eq(&args[0], &args[1], false)
             },
             TestFun::NotEq => {
-                required_num_args(fun, args, 2)?;
+                required_num_args(fun, args, 2, 2)?;
                 eval_eq(&args[0], &args[1], true)
             }
         }
@@ -245,24 +261,100 @@ impl Eval for SubstExpr {
         use self::EvalErr::*;
 
         match fun {
-            FilterFun::CapFirst => {
-                required_num_args(fun, args, 1)?;
-                cap_first(&args[0])
-            },
-            _ => unimplemented!(),
+            FilterFun::CapFirst => cap_first(&args),
+            FilterFun::Lower => lower(&args),
+            FilterFun::Trim => trim(&args),
+            FilterFun::Truncate => truncate(&args),
+            FilterFun::Upper => upper(&args),
         }
     }
 }
 
-fn cap_first(a: &EvalResult) -> EvalResult {
+fn cap_first(args: &Vec<EvalResult>) -> EvalResult {
     use self::EvalOk::*;
     use self::EvalErr::*;
 
-    match a {
-        Ok(Str(v)) => unimplemented!(),
+    required_num_args(&FilterFun::CapFirst, args, 1, 1)?;
+    match &args[0] {
+        Ok(Str(s)) | Ok(Node(Ast::Scalar(_, _, _, s))) => {
+            let mut chars = s.chars();
+            Ok(Str(match chars.next() {
+                None => String::new(),
+                Some(c) => dbg!(c.to_uppercase().to_string()) + chars.as_str(),
+            }))
+        },
         Ok(_) => Err(TypeError("required a string".to_string())),
         Err(e) => Err(e.clone()),
     }
+}
+
+fn lower(args: &Vec<EvalResult>) -> EvalResult {
+    use self::EvalOk::*;
+    use self::EvalErr::*;
+
+    required_num_args(&FilterFun::Lower, args, 1, 1)?;
+    match &args[0] {
+        Ok(Str(s)) | Ok(Node(Ast::Scalar(_, _, _, s))) => {
+            Ok(Str(s.to_lowercase()))
+        },
+        Ok(_) => Err(TypeError("required a string".to_string())),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn upper(args: &Vec<EvalResult>) -> EvalResult {
+    use self::EvalOk::*;
+    use self::EvalErr::*;
+
+    required_num_args(&FilterFun::Lower, args, 1, 1)?;
+    match &args[0] {
+        Ok(Str(s)) | Ok(Node(Ast::Scalar(_, _, _, s))) => {
+            Ok(Str(s.to_uppercase()))
+        },
+        Ok(_) => Err(TypeError("required a string".to_string())),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn trim(args: &Vec<EvalResult>) -> EvalResult {
+    use self::EvalOk::*;
+    use self::EvalErr::*;
+
+    required_num_args(&FilterFun::Lower, args, 1, 1)?;
+    match dbg!(&args[0]) {
+        Ok(Str(s))
+        | Ok(Node(Ast::Scalar(_, _, _, s))) => {
+            Ok(Str(s.trim().to_string()))
+        },
+        Ok(_) => Err(TypeError("required a string".to_string())),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn truncate(args: &Vec<EvalResult>) -> EvalResult {
+    use self::EvalOk::*;
+    use self::EvalErr::*;
+
+    required_num_args(&FilterFun::Lower, args, 2, 2)?;
+    let mut args_iter = args.iter();
+    let mut s = match dbg!(args_iter.next().unwrap()) {
+        Ok(Str(s)) | Ok(Node(Ast::Scalar(_, _, _, s))) => s,
+        Ok(_) => return Err(TypeError("required a string".to_string())),
+        Err(e) => return Err(e.clone()),
+    }.to_string();
+    let length = match args_iter.next().unwrap() {
+        Ok(Int(n)) => {
+            match usize::try_from(*n) {
+                Ok(l) => l,
+                Err(e) => return Err(TypeError("Cannot convert to usize".to_string())),
+            }
+        },
+        Ok(_) => return Err(TypeError("required an integer".to_string())),
+        Err(e) => return Err(e.clone()),
+    };
+
+    s.truncate(length);
+    Ok(Str(s))
 }
 
 fn eval_eq(a1: &EvalResult, a2: &EvalResult, negate: bool) -> EvalResult {
@@ -303,11 +395,18 @@ fn eval_plain_scalar(v: &str) -> EvalResult {
     }
 }
 
-fn required_num_args(fun: &Debug, args: &Vec<EvalResult>, req_len: usize) -> Result<(), EvalErr> {
-    if args.len() != req_len {
-        return Err(EvalErr::InvalidNumArgs(format!(
-            "{:?} takes 1 argument, {} given", fun, args.len()
-        )));
+fn required_num_args(fun: &Debug, args: &Vec<EvalResult>, min: usize, max: usize) -> Result<(), EvalErr> {
+    if args.len() < min || args.len() > max {
+        if min == max {
+            return Err(EvalErr::InvalidNumArgs(format!(
+                "{:?} takes {} argument(s), {} given", fun, min, args.len()
+            )));
+        } else {
+            return Err(EvalErr::InvalidNumArgs(format!(
+                "{:?} takes from {} to {} arguments, {} given",
+                fun, min, max, args.len()
+            )))
+        }
     }
     Ok(())
 }
