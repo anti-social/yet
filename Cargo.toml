@@ -2,7 +2,7 @@
 name = "yet"
 version = "0.0.3"
 authors = ["Alexander Koval <kovalidis@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [lib]
 name = "yet"
