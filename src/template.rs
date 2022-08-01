@@ -441,15 +441,15 @@ pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
 fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
     -> Result<Ast, failure::Error>
 {
-    use combine::Parser;
+    // use combine::Parser;
 
-    let parse_res = template().parse(tmpl.tmpl)
+    let parse_res = template(tmpl.tmpl)
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?;
     let template_parts = match parse_res {
-        (_, rest) if rest.len() > 0 => {
+        (rest, _) if rest.len() > 0 => {
             return Err(format_err!("Non empty parse"));
         }
-        (template_parts, _) => {
+        (_, template_parts) => {
             template_parts
         }
     };
@@ -492,4 +492,6 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
         clone_scalar_kind(tmpl.kind),
         rendered_tmpl
     ))
+
+    // unimplemented!()
 }

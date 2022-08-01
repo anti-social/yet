@@ -16,7 +16,8 @@ path = "src/bin/main.rs"
 # quire = "0.4.1"
 quire = { git = 'https://github.com/anti-social/rust-quire', rev="d5bc58d" }
 # quire = { path = "../rust-quire" }
-combine = "3.6.6"
+# combine = "3.6.6"
+nom = "7.1"
 failure = "0.1.5"
 failure_derive = "0.1.5"
 argparse = "0.2.2"

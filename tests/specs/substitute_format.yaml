@@ -1,6 +1,6 @@
 ---
 test:
-  text: Hello, ${{values.title}} ${{values.name}}!
+  text: Hello, ${{ values.title }} ${{ values.name }}!
 
 ---
 values:
