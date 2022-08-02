@@ -1,37 +1,22 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::rc::Rc;
 use std::result;
 
 use failure::{self, format_err};
 use failure_derive::Fail;
 
-use quire::Pos;
-use quire::ast::Ast;
-use quire::ast::NullKind;
-use quire::ast::ScalarKind;
-use quire::ast::Tag;
+use serde::Deserialize;
+
+use serde_yaml::{Mapping, Sequence, Value};
+use serde_yaml::value::{Tag, TaggedValue};
 
 use crate::constructs::Each;
 use crate::parser::template;
 use crate::parser::TemplatePart;
-use crate::util::{clone_ast, clone_null_kind, clone_scalar_kind, clone_tag};
-
-static BOOL_TRUE_VALUES: &[&str] = &[
-    "true", "TRUE", "True",
-    "y", "Y", "yes", "YES", "Yes",
-    "on", "ON", "On",
-];
-
-static BOOL_FALSE_VALUES: &[&str] = &[
-    "false", "FALSE", "False",
-    "n", "N", "no", "NO", "No",
-    "off", "OFF", "Off",
-];
 
 const VALUES_SCOPE: &str = "values";
 const ENV_SCOPE: &str = "env";
@@ -54,60 +39,35 @@ enum TemplatingError {
     ParseError { err: String }
 }
 
-pub fn parse_template(fpath: &Path) -> Result<Vec<Ast>, failure::Error> {
+pub fn parse_template(fpath: &Path) -> Result<Vec<Value>, failure::Error> {
     let ref mut content = String::new();
     File::open(fpath).with_path(fpath)?
         .read_to_string(content).with_path(fpath)?;
 
-    let errors = quire::ErrorCollector::new();
-    Ok(
-        quire::raw_parse_all(
-            Rc::new(fpath.display().to_string()),
-            content,
-            |doc| {
-                quire::ast::process(&quire::Options::default(), doc, &errors)
-            }
-        )
-            .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?
-    )
-}
-
-pub fn parse_values(fpath: &Path) -> Result<Ast, failure::Error> {
-    let ref mut content = String::new();
-    File::open(fpath).with_path(fpath)?
-        .read_to_string(content).with_path(fpath)?;
-
-    let errors = quire::ErrorCollector::new();
-    let fname = fpath.as_os_str().to_string_lossy().into_owned();
-    Ok(quire::raw_parse(Rc::new(fname), content, |doc| {
-        quire::ast::process(&quire::Options::default(), doc, &errors)
-    })
-        .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?)
-}
-
-struct TemplateScalar<'a> {
-    pub tmpl: &'a str,
-    pub pos: &'a Pos,
-    pub tag: &'a Tag,
-    pub kind: &'a ScalarKind,
-}
-
-impl<'a> TemplateScalar<'a> {
-    fn new(tmpl: &'a str, pos: &'a Pos, tag: &'a Tag, kind: &'a ScalarKind)
-        -> TemplateScalar<'a>
-    {
-        TemplateScalar {tmpl, pos, tag, kind}
+    let mut values = vec!();
+    for doc_de in serde_yaml::Deserializer::from_str(&content) {
+        values.push(Value::deserialize(doc_de)?);
     }
+
+    Ok(values)
+}
+
+pub fn parse_values(fpath: &Path) -> Result<Value, failure::Error> {
+    let ref mut content = String::new();
+    File::open(fpath).with_path(fpath)?
+        .read_to_string(content).with_path(fpath)?;
+
+    let de = serde_yaml::Deserializer::from_str(&content);
+    Ok(Value::deserialize(de)?)
 }
 
 pub(crate) struct RenderContext<'a> {
-    values: Option<&'a Ast>,
+    values: Option<&'a Value>,
     env: &'a HashMap<String, String>,
-    // anchors: HashMap<String, Ast>,
-    scopes_stack: RefCell<Vec<HashMap<String, Ast>>>,
+    scopes_stack: RefCell<Vec<HashMap<String, Value>>>,
 }
 
-struct ScopesGuard<'a>(&'a RefCell<Vec<HashMap<String, Ast>>>);
+struct ScopesGuard<'a>(&'a RefCell<Vec<HashMap<String, Value>>>);
 
 impl<'a> Drop for ScopesGuard<'a> {
     fn drop(&mut self) {
@@ -116,41 +76,33 @@ impl<'a> Drop for ScopesGuard<'a> {
 }
 
 impl<'a> RenderContext<'a> {
-    fn new(values: Option<&'a Ast>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
+    fn new(values: Option<&'a Value>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
         RenderContext {
             values, env, scopes_stack: RefCell::new(vec!())
         }
     }
 
-    fn values(&self) -> Result<&Ast, failure::Error> {
+    fn values(&self) -> Result<&Value, failure::Error> {
         self.values.ok_or(format_err!("Values scope is missing"))
     }
 
-    fn push_scopes(&self, scopes: HashMap<String, Ast>) -> ScopesGuard {
+    fn push_scopes(&self, scopes: HashMap<String, Value>) -> ScopesGuard {
         self.scopes_stack.borrow_mut().push(scopes);
         ScopesGuard(&self.scopes_stack)
     }
 
-    fn resolve_value(&self, var_path: &Vec<String>) -> Result<Ast, failure::Error> {
+    fn resolve_value(&self, var_path: &Vec<String>) -> Result<Value, failure::Error> {
         let scope_and_path = var_path.split_first();
         let value = match scope_and_path {
             Some((scope, path)) if scope == VALUES_SCOPE => {
                 let var_ast = follow_ast(self.values()?, path, scope)?;
-                clone_ast(var_ast)
+                var_ast.clone()
             },
             Some((scope, path)) if scope == ENV_SCOPE => {
                 let key = path.join(".");
                 match self.env.get(&key) {
                     Some(v) => {
-                        let pos = Pos {
-                            filename: Rc::new("<env>".to_string()),
-                            indent: 0,
-                            line: 1,
-                            line_start: true,
-                            line_offset: 0,
-                            offset: 0,
-                        };
-                        Ast::Scalar(pos, Tag::NonSpecific, ScalarKind::Quoted, v.clone())
+                        Value::String(v.clone())
                     },
                     None => return Err(format_err!("Missing key: env.{}", key))
                 }
@@ -160,9 +112,9 @@ impl<'a> RenderContext<'a> {
                 for scopes_frame in self.scopes_stack.borrow().iter().rev() {
                     match scopes_frame.get(scope) {
                         Some(scope_ast) => {
-                            found_ast = Some(clone_ast(
-                                follow_ast(scope_ast, path, scope)?
-                            ));
+                            found_ast = Some(
+                                follow_ast(scope_ast, path, scope)?.clone()
+                            );
                             break;
                         }
                         None => continue
@@ -180,46 +132,55 @@ impl<'a> RenderContext<'a> {
     }
 
 
-    pub(crate) fn render(&self, ast: &Ast) -> Result<Rendered, failure::Error> {
-        let rendered_ast = match ast {
-            Ast::Map(pos, tag, map) => {
-                match tag {
-                    Tag::LocalTag(t) if t == "*If" => {
-                        process_if(self, map)?
-                    }
-                    Tag::LocalTag(t) if t == "*Each" => {
-                        let each = Each::from_map(self, map)?;
-                        process_each(self, each)?
-                    }
-                    _ => {
-                        Rendered::Plain(process_map(self, map, pos, tag)?)
-                    }
-                }
+    pub(crate) fn render(&self, ast: &Value) -> Result<Value, failure::Error> {
+        let (value, tag) = unpack_tagged_value(ast);
+
+        let rendered_ast = match (value, tag) {
+            (Value::Mapping(map), Some(tag)) if tag == "*If" => {
+                process_if(self, map)?
             }
-            Ast::Seq(pos, tag, seq) => {
-                Rendered::Plain(process_seq(self, seq, pos, tag)?)
+            (Value::Mapping(map), Some(tag)) if tag == "*Each" => {
+                process_each(self, Each::from_map(map, self)?)?
             }
-            Ast::Scalar(pos, tag, kind, val) => {
-                let tmpl = TemplateScalar::new(val, pos, tag, kind);
-                Rendered::Plain(render_template(&tmpl, self)?)
+            (Value::Mapping(map), tag) => {
+                process_map(self, &map, tag)?
             }
-            Ast::Null(pos, tag, kind) => {
-                Rendered::Plain(
-                    Ast::Null(pos.clone(), clone_tag(tag), clone_null_kind(kind))
-                )
+            (Value::Sequence(seq), tag) => {
+                process_seq(self, &seq, tag)?
             }
+            (Value::String(v), tag) => {
+                maybe_wrap_with_tag(render_template(&v, self)?, tag)
+            }
+            (Value::Bool(v), tag) => {
+                maybe_wrap_with_tag(Value::Bool(*v), tag)
+            }
+            (Value::Number(v), tag) => {
+                maybe_wrap_with_tag(Value::Number(v.clone()), tag)
+            }
+            (Value::Null, tag) => {
+                maybe_wrap_with_tag(Value::Null, tag)
+            }
+            _ => unreachable!()
         };
         Ok(rendered_ast)
     }
 }
 
-fn follow_ast<'a>(ast: &'a Ast, var_path: &[String], scope: &'a str)
-    -> Result<&'a Ast, failure::Error>
+fn unpack_tagged_value(value: &Value) -> (&Value, Option<&Tag>) {
+    if let Value::Tagged(tagged_value) = value {
+        (&tagged_value.value, Some(&tagged_value.tag))
+    } else {
+        (value, None)
+    }
+}
+
+fn follow_ast<'a>(ast: &'a Value, var_path: &[String], scope: &'a str)
+    -> Result<&'a Value, failure::Error>
 {
     let mut cur_node = ast;
     for (ix, p) in var_path.iter().enumerate() {
         let map = match cur_node {
-            Ast::Map(_, _, map) => map,
+            Value::Mapping(map) => map,
             _ => return Err(format_err!(
                 "Expected a mapping: {}.{}", scope, var_path.join(".")
             )),
@@ -234,216 +195,144 @@ fn follow_ast<'a>(ast: &'a Ast, var_path: &[String], scope: &'a str)
     Ok(cur_node)
 }
 
-fn resolve_branch(data: &BTreeMap<String, Ast>, key: &str) -> Ast {
-    let pos = Pos {
-        filename: Rc::new("<expr>".to_string()),
-        indent: 0,
-        line: 1,
-        line_start: true,
-        line_offset: 0,
-        offset: 0,
-    };
+fn resolve_branch(data: &Mapping, key: &str) -> Value {
     match data.get(key) {
-        Some(value) => clone_ast(value),
-        None => Ast::Null(
-            pos, Tag::NonSpecific, NullKind::Implicit
-        ),
+        Some(value) => value.clone(),
+        None => Value::Null,
     }
 }
 
-fn process_if(ctx: &RenderContext, data: &BTreeMap<String, Ast>)
-    -> Result<Rendered, failure::Error>
+fn process_if(ctx: &RenderContext, data: &Mapping)
+    -> Result<Value, failure::Error>
 {
     let resolved_ast = match data.get("condition") {
-        Some(Ast::Scalar(pos, tag, kind, cond)) => {
-            let rendered_cond = render_template(
-                &TemplateScalar::new(cond, pos, tag, kind), ctx
-            )?;
-            match rendered_cond {
-                Ast::Scalar(_, _, _, cond_value) => {
-                    let branch_ast = if BOOL_TRUE_VALUES.contains(&cond_value.as_str()) {
-                        resolve_branch(data, "then")
-                    } else if BOOL_FALSE_VALUES.contains(&cond_value.as_str()) {
-                        resolve_branch(data, "else")
-                    } else {
-                        return Err(format_err!(
-                            "`!*If` condition resolved to non-boolean value: {}", &cond_value
-                        ));
-                    };
-                    ctx.render(&branch_ast)?
-                },
-                _ => return Err(format_err!("`!*If` condition must be resolved into scalar")),
+        Some(Value::String(cond_tmpl)) => {
+            match render_template(cond_tmpl, ctx)? {
+                Value::Bool(true) => resolve_branch(data, "then"),
+                Value::Bool(false) => resolve_branch(data, "else"),
+                _ => {
+                    return Err(format_err!("`!*If` condition must be resolved into scalar"))
+                }
             }
-        },
+        }
         Some(_) => return Err(format_err!("`!*If` condition must be a scalar")),
         None => return Err(format_err!("`!*If` must contain `condition` key")),
     };
-    Ok(resolved_ast)
+    Ok(ctx.render(&resolved_ast)?)
 }
 
 fn process_each(ctx: &RenderContext, each: Each)
-    -> Result<Rendered, failure::Error>
+    -> Result<Value, failure::Error>
 {
     let mut result_ast = None;
     for item in each.items {
         let mut scopes = HashMap::new();
         scopes.insert(each.bind.clone(), item);
-        let scopes_guard = ctx.push_scopes(scopes);
+        let _scopes_guard = ctx.push_scopes(scopes);
 
         match ctx.render(&each.body)? {
-            Rendered::Plain(Ast::Seq(pos, _, seq)) => {
+            Value::Sequence(seq) => {
                 match result_ast {
                     None => {
-                        result_ast = Some(Ast::Seq(pos.clone(), Tag::NonSpecific, seq));
+                        result_ast = Some(Value::Sequence(seq));
                     }
-                    Some(Ast::Seq(_, _, ref mut result_seq)) => {
-                        result_seq.extend(seq);
+                    Some(Value::Sequence(ref mut result)) => {
+                        result.extend(seq);
                     }
                     Some(_) => {
                         return Err(format_err!("Cannot merge into a list"));
                     }
                 }
-            },
-            Rendered::Plain(Ast::Map(pos, _, map)) => {
+            }
+            Value::Mapping(map) => {
                 match result_ast {
                     None => {
-                        result_ast = Some(Ast::Map(pos.clone(), Tag::NonSpecific, map));
+                        result_ast = Some(Value::Mapping(map));
                     }
-                    Some(Ast::Map(_, _, ref mut result_map)) => {
-                        result_map.extend(map);
+                    Some(Value::Mapping(ref mut result)) => {
+                        result.extend(map);
                     }
                     Some(_) => {
                         return Err(format_err!("Cannot merge into a map"));
                     }
                 }
             }
-            Rendered::Unpack(_) => unimplemented!(),
             _ => return Err(format_err!("Result of a loop cannot be a scalar")),
         }
     }
 
-    Ok(Rendered::Plain(
-        result_ast.unwrap_or_else(|| {
-            let pos = Pos {
-                filename: Rc::new("<each>".to_string()),
-                indent: 0,
-                line: 1,
-                line_start: true,
-                line_offset: 0,
-                offset: 0,
-            };
-            Ast::Null(pos, Tag::NonSpecific, NullKind::Implicit)
-        })
-    ))
+    Ok(result_ast.unwrap_or(Value::Null))
 }
 
 fn process_each_document(ctx: &RenderContext, each: Each)
-    -> Result<Vec<Ast>, failure::Error>
+    -> Result<Vec<Value>, failure::Error>
 {
-    let mut result_docs = vec!();
+    let mut result_docs = Sequence::new();
     for item in each.items {
         let mut scopes = HashMap::new();
         scopes.insert(each.bind.clone(), item);
-        let scopes_guard = ctx.push_scopes(scopes);
+        let _scopes_guard = ctx.push_scopes(scopes);
 
-        match ctx.render(&each.body)? {
-            Rendered::Plain(rendered_body) => {
-                result_docs.push(rendered_body);
-            },
-            Rendered::Unpack(_) => return Err(format_err!(
-                "Cannot unpack into a root document"
-            )),
-        }
+        result_docs.push(ctx.render(&each.body)?);
     }
 
     Ok(result_docs)
 }
 
-fn process_scalar(
-    ctx: &RenderContext, value: &str, pos: &Pos, tag: &Tag, kind: &ScalarKind
-)
-    -> Result<Ast, failure::Error>
+fn process_map(ctx: &RenderContext, map: &Mapping, tag: Option<&Tag>)
+    -> Result<Value, failure::Error>
 {
-    render_template(
-        &TemplateScalar::new(value, pos, tag, kind), ctx
-    )
-}
-
-fn process_map(ctx: &RenderContext, map: &BTreeMap<String, Ast>, pos: &Pos, tag: &Tag)
-    -> Result<Ast, failure::Error>
-{
-    let mut rendered_map = BTreeMap::new();
-    for (k, v) in map {
-        let tmpl = TemplateScalar::new(
-            k, pos, &Tag::NonSpecific, &ScalarKind::Quoted
-        );
-        if let Ast::Scalar(_, _, _, rendered_key) = render_template(&tmpl, ctx)? {
-            match ctx.render(v)? {
-                Rendered::Plain(rendered_value) => {
-                    rendered_map.insert(rendered_key, rendered_value);
-                },
-                Rendered::Unpack(Ast::Map(.., m)) => {
-                    rendered_map.extend(m);
-                },
-                _ => return Err(format_err!(
-                    "Cannot merge rendered value into map"
-                )),
-            };
-        } else {
-            return Err(format_err!("Only scalar type can be a map key"))
-        }
+    let mut rendered_map = Mapping::new();
+    for (key, value) in map {
+        let rendered_key = match key {
+            Value::String(key) => render_template(key, ctx)?,
+            _ => key.clone(),
+        };
+        rendered_map.insert(rendered_key, ctx.render(value)?);
     }
-    Ok(Ast::Map(pos.clone(), clone_tag(tag), rendered_map))
+    Ok(maybe_wrap_with_tag(Value::Mapping(rendered_map), tag))
 }
 
-fn process_seq(ctx: &RenderContext, seq: &Vec<Ast>, pos: &Pos, tag: &Tag)
-    -> Result<Ast, failure::Error>
+fn process_seq(ctx: &RenderContext, seq: &Sequence, tag: Option<&Tag>)
+    -> Result<Value, failure::Error>
 {
-    let mut rendered_seq = Vec::with_capacity(seq.len());
-    for a in seq {
-        match ctx.render(a)? {
-            Rendered::Plain(v) => rendered_seq.push(v),
-            Rendered::Unpack(Ast::Seq(.., s)) => {
-                rendered_seq.extend(s);
-            },
-            Rendered::Unpack(Ast::Null(..)) => {}
-            _ => return Err(format_err!("Cannot merge rendered value into sequence")),
-        }
+    let mut rendered_seq = Sequence::with_capacity(seq.len());
+    for v in seq {
+        rendered_seq.push(ctx.render(v)?);
     }
-    Ok(Ast::Seq(pos.clone(), clone_tag(tag), rendered_seq))
+
+    Ok(maybe_wrap_with_tag(Value::Sequence(rendered_seq), tag))
 }
 
-pub(crate) enum Rendered {
-    Plain(Ast),
-    Unpack(Ast),
+fn maybe_wrap_with_tag(value: Value, tag: Option<&Tag>) -> Value {
+    if let Some(tag) = tag {
+        Value::Tagged(Box::new(
+            TaggedValue { tag: tag.clone(), value }
+        ))
+    } else {
+        value
+    }
 }
 
-pub fn render(ast: &Ast, values: Option<&Ast>, env: &HashMap<String, String>)
-    -> Result<Vec<Ast>, failure::Error>
+pub fn render(ast: &Value, values: Option<&Value>, env: &HashMap<String, String>)
+    -> Result<Vec<Value>, failure::Error>
 {
     let ctx = RenderContext::new(values, env);
-    match ast {
-        Ast::Map(pos, Tag::LocalTag(tag), map) if tag == "*EachDocument" => {
-            let each = Each::from_map(&ctx, map)?;
+    match unpack_tagged_value(ast) {
+        (Value::Mapping(map), Some(tag)) if tag == "*EachDocument" => {
+            let each = Each::from_map(map, &ctx)?;
             process_each_document(&ctx, each)
-        },
+        }
         _ => {
-            match ctx.render(ast)? {
-                Rendered::Plain(a) => Ok(vec!(a)),
-                Rendered::Unpack(_) => return Err(format_err!(
-                    "Cannot unpack rendered node into root"
-                )),
-            }
+            Ok(vec!(ctx.render(ast)?))
         }
     }
 }
 
-fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
-    -> Result<Ast, failure::Error>
+fn render_template(tmpl: &str, ctx: &RenderContext)
+    -> Result<Value, failure::Error>
 {
-    // use combine::Parser;
-
-    let parse_res = template(tmpl.tmpl)
+    let parse_res = template(tmpl)
         .map_err(|e| TemplatingError::ParseError {err: format!("{}", e)})?;
     let template_parts = match parse_res {
         (rest, _) if rest.len() > 0 => {
@@ -454,10 +343,10 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
         }
     };
 
-    // Single plain (non-quoted) substitution can be an Ast
-    // command: ${{values.cmd}}
-    match (tmpl.kind, template_parts.split_first()) {
-        (ScalarKind::Plain, Some((TemplatePart::Subst(var_path), rest)))
+    // Single substitution can be an Ast,
+    // for example `command: ${{ values.cmd }}`
+    match template_parts.split_first() {
+        Some((TemplatePart::Subst(var_path), rest))
         if rest.len() == 0 => {
             return Ok(ctx.resolve_value(var_path)?);
         }
@@ -470,12 +359,18 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
             TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
             TemplatePart::Subst(var_path) => {
                 match ctx.resolve_value(var_path)? {
-                    Ast::Scalar(_, _, _, v) => {
+                    Value::String(v) => {
                         rendered_tmpl.push_str(&v);
-                    },
-                    Ast::Null(_, _, _) => {
+                    }
+                    Value::Bool(v) => {
+                        rendered_tmpl.push_str(&v.to_string());
+                    }
+                    Value::Number(v) => {
+                        rendered_tmpl.push_str(&v.to_string());
+                    }
+                    Value::Null => {
                         rendered_tmpl.push_str("null");
-                    },
+                    }
                     _ => {
                         return Err(format_err!(
                             "Can render into string only scalar value or null"
@@ -486,12 +381,5 @@ fn render_template(tmpl: &TemplateScalar, ctx: &RenderContext)
         }
     }
 
-    Ok(Ast::Scalar(
-        tmpl.pos.clone(),
-        clone_tag(tmpl.tag),
-        clone_scalar_kind(tmpl.kind),
-        rendered_tmpl
-    ))
-
-    // unimplemented!()
+    Ok(Value::String(rendered_tmpl))
 }

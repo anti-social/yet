@@ -1,37 +1,23 @@
 use std::collections::HashMap;
 use std::fs::read_dir;
 use std::path::Path;
-use std::rc::Rc;
 
 use failure::format_err;
 
-use quire::Pos;
-use quire::ast::{Ast, Tag};
-use quire::emit_ast;
+use serde_yaml::Value;
 
 use yet::template::{parse_template, render};
 
-fn mk_fake_pos() -> Pos {
-    Pos {
-        filename: Rc::new("<test>".to_string()),
-        indent: 0,
-        line: 1,
-        line_start: true,
-        line_offset: 0,
-        offset: 0,
-    }
-}
-
-fn env_vars_from_ast(env: Option<&Ast>)
+fn env_vars_from_ast(env: Option<&Value>)
     -> Result<HashMap<String, String>, failure::Error>
 {
     let mut env_vars = HashMap::new();
     match env {
         None => {},
-        Some(Ast::Map(.., map)) => {
+        Some(Value::Mapping(map)) => {
             for (key, val) in map {
-                match val {
-                    Ast::Scalar(.., v) => env_vars.insert(key.clone(), v.clone()),
+                match (key, val) {
+                    (Value::String(k), Value::String(v)) => env_vars.insert(k.clone(), v.clone()),
                     _ => return Err(format_err!("Env value must be a scalar")),
                 };
             }
@@ -49,17 +35,17 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
 
     for test_case in test_data.iter() {
         let (env, values, result) = match test_case {
-            Ast::Map(.., map) => {
+            Value::Mapping(map) => {
                 (
                     map.get("env"),
                     map.get("values"),
                     match map.get("result") {
-                        Some(Ast::Map(.., res)) => res,
+                        Some(Value::Mapping(res)) => res,
                         None => return Err(format_err!("`result` is mandatory")),
                         _ => return Err(format_err!("`result` must be a map")),
                     }
                 )
-            },
+            }
             _ => return Err(format_err!("Expected a map")),
         };
 
@@ -68,30 +54,25 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
 
         if let Some(ok_res) = result.get("ok") {
             let rendered_docs = render_result?;
-            let mut buf = Vec::<u8>::new();
+            let mut output = String::new();
             match result.get("multi-doc") {
                 Some(_) => {
-                    let result_ast = Ast::Seq(mk_fake_pos(), Tag::NonSpecific, rendered_docs);
-                    emit_ast(&result_ast, &mut buf)?;
+                    output.push_str(&serde_yaml::to_string(&Value::Sequence(rendered_docs))?);
                 },
                 None => {
-                    emit_ast(&rendered_docs[0], &mut buf)?;
+                    output.push_str(&serde_yaml::to_string(&rendered_docs[0])?);
                 }
             }
-            let output = String::from(std::str::from_utf8(&buf)?);
-            buf.clear();
-            emit_ast(&ok_res, &mut buf)?;
-            let expected_output = String::from(std::str::from_utf8(&buf)?);
 
             assert_eq!(
                 output,
-                expected_output
+                serde_yaml::to_string(ok_res)?
             );
         } else if let Some(err_res) = result.get("err") {
             let expected_msg = match err_res {
-                Ast::Map(.., err_map) => {
+                Value::Mapping(err_map) => {
                     match err_map.get("msg") {
-                        Some(Ast::Scalar(.., err_msg)) => err_msg,
+                        Some(Value::String(err_msg)) => err_msg,
                         None => return Err(format_err!("Missing `result.err.msg`")),
                         _ => return Err(format_err!("`result.err.msg` must be a scalar")),
                     }
@@ -112,7 +93,6 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
                 "Result must contain `ok` or `err` key"
             ))
         }
-
     }
 
     Ok(())
@@ -124,6 +104,7 @@ fn test_all_specs() -> Result<(), failure::Error> {
         let test_file_path = entry?.path();
         if !test_file_path.is_file() { continue }
 
+        println!(">>> {}", &test_file_path.to_string_lossy());
         test_file(test_file_path)?;
     }
 

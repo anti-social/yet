@@ -5,8 +5,6 @@ use std::path::PathBuf;
 
 use argparse::{ArgumentParser, Store, StoreOption};
 
-use quire::emit_ast;
-
 use yet::template::{parse_template, parse_values, render};
 
 fn main() -> Result<(), failure::Error> {
@@ -39,7 +37,7 @@ fn main() -> Result<(), failure::Error> {
             if rendered_asts.len() > 0 {
                 writeln!(&mut out, "---")?;
             }
-            emit_ast(&rendered_ast, &mut out)?;
+            serde_yaml::to_writer(&mut out, rendered_ast)?;
         }
     }
 

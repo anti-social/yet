@@ -1,33 +1,24 @@
-use std::collections::BTreeMap;
-
 use failure::format_err;
 
-use quire::ast::Ast;
+use serde_yaml::{Mapping, Value};
 
-use crate::template::{RenderContext, Rendered};
+use crate::template::RenderContext;
 
 pub(crate) struct Each<'a> {
-    pub items: Vec<Ast>,
+    pub items: Vec<Value>,
     pub bind: String,
-    pub body: &'a Ast,
+    pub body: &'a Value,
 }
 
 impl<'a> Each<'a> {
-    pub(crate) fn from_map(ctx: &RenderContext, map: &'a BTreeMap<String, Ast>)
+    pub(crate) fn from_map(map: &'a Mapping, ctx: &RenderContext)
         -> Result<Each<'a>, failure::Error>
     {
         let items = match map.get("items") {
             Some(items) => match ctx.render(items)? {
-                Rendered::Plain(rendered_items) => {
-                    match rendered_items {
-                        Ast::Seq(pos, tag, seq) => seq,
-                        _ => return Err(format_err!(
-                            "items of *Each must be a sequence"
-                        )),
-                    }
-                },
-                Rendered::Unpack(_) => return Err(format_err!(
-                    "Unpacking is not supported for `items` field of `*Each`"
+                Value::Sequence(seq) => seq,
+                _ => return Err(format_err!(
+                    "items of *Each must be a sequence"
                 )),
             },
             None => return Err(format_err!(
@@ -36,14 +27,11 @@ impl<'a> Each<'a> {
         };
         let bind = match map.get("bind") {
             Some(bind) => match ctx.render(bind)? {
-                Rendered::Plain(Ast::Scalar(_, _, _, bind_name)) => {
+                Value::String(bind_name) => {
                     bind_name
                 },
-                Rendered::Plain(_) => return Err(format_err!(
+                _ => return Err(format_err!(
                     "Only scalar can be a bind name"
-                )),
-                Rendered::Unpack(_) => return Err(format_err!(
-                    "Unpacking is not supported for `bind` field of `*Each`"
                 )),
             },
             None => "item".to_string(),
