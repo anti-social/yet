@@ -1,5 +1,5 @@
 extern crate failure_derive;
 
-mod constructs;
+mod elements;
 pub mod parser;
 pub mod template;

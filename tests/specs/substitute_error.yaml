@@ -9,7 +9,7 @@ values:
     value: Awesome!
 result:
   err:
-    msg: "Missing key: env.TEST_SUITE"
+    msg: "undefined value env.TEST_SUITE"
 
 ---
 values: {}
@@ -17,4 +17,4 @@ env:
   suite: unit
 result:
   err:
-    msg: "Missing key: values.some"
+    msg: "undefined value values.some"

@@ -1,0 +1,27 @@
+---
+!*Each
+  items: ${{values.models}}
+  loop:
+  - key: "model.${{item.key}}:"
+    name: ${{item.value.color}} - ${{item.value.size}}
+
+---
+values:
+  models:
+    red-small:
+      color: red
+      size: 1
+    red-big:
+      color: red
+      size: 3
+    white-middle:
+      color: white
+      size: 2
+result:
+  ok:
+  - key: "model.red-small:"
+    name: red - 1
+  - key: "model.red-big:"
+    name: red - 3
+  - key: "model.white-middle:"
+    name: white - 2
