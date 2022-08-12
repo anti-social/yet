@@ -1,15 +1,106 @@
 use nom::IResult;
 use nom::branch::alt;
-use nom::bytes::complete::{escaped, is_not, tag};
-use nom::character::complete::{alphanumeric1, multispace0, one_of};
-use nom::combinator::{eof, map, recognize, verify};
-use nom::multi::{many0, many1_count, separated_list1};
-use nom::sequence::{delimited, terminated};
+use nom::bytes::complete::{escaped, is_not, tag, take_until};
+use nom::character::complete::{alphanumeric1, anychar, char, digit1, multispace0, one_of};
+use nom::combinator::{cut, eof, map, map_parser, map_res, recognize, verify};
+use nom::error::context;
+use nom::multi::{many0, many0_count, many1_count, separated_list1};
+use nom::sequence::{delimited, preceded, terminated, tuple};
 
 #[derive(Debug, PartialEq)]
 pub enum TemplatePart {
     Gap(String),
-    Subst(Vec<String>),
+    Expr(String),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Expr {
+    Str(String),
+    Int(i64),
+    Val(String),
+    GetAttr(Box<Expr>, String),
+    GetItem(Box<Expr>, Box<Expr>),
+}
+
+impl Expr {
+    fn into_boxed(self) -> Box<Self> {
+        Box::new(self)
+    }
+}
+
+fn parse_str(input: &str) -> IResult<&str, &str> {
+    escaped(
+        alphanumeric1, '\\', one_of("\"n\\")
+    )(input)
+}
+
+fn string(input: &str) -> IResult<&str, &str> {
+    context(
+        "string",
+        preceded(
+            char('\"'),
+            cut(terminated(parse_str, char('\"')))
+        ),
+  )(input)
+}
+
+fn int(input: &str) -> IResult<&str, i64> {
+    context(
+        "int",
+        map_res(
+            digit1,
+            str::parse
+        )
+    )(input)
+}
+
+fn val_name(input: &str) -> IResult<&str, &str> {
+    recognize(
+        many1_count(alt((
+            alphanumeric1,
+            tag("_"),
+            tag("-")
+        )))
+    )(input)
+}
+
+fn val_attr(input: &str) -> IResult<&str, (Expr, &str)> {
+    context(
+        "value_attr",
+        map(
+            tuple((
+                parse_expression,
+                tag("."),
+                cut(val_name)
+            )),
+            |(v, _, a)| (v, a)
+        )
+    )(input)
+}
+
+fn val_index(input: &str) -> IResult<&str, (Expr, Expr)> {
+    context(
+        "value_index",
+        tuple((
+            parse_expression,
+            delimited(
+                tag("["),
+                preceded(multispace0, parse_expression),
+                cut(preceded(multispace0, tag("]")))
+            )
+        ))
+    )(input)
+}
+
+fn parse_expression(input: &str) -> IResult<&str, Expr> {
+    todo!()
+    // alt((
+    //     map(string, |v| Expr::Str(v.to_string())),
+    //     map(int, Expr::Int),
+    //     map(val_name, |v| Expr::Val(v.to_string())),
+    //     map(val_attr, |(v, a)| Expr::GetAttr(Box::new(v), a.to_string())),
+    //     map(val_index, |(v, i)| Expr::GetItem(Box::new(v), Box::new(i))),
+    // ))(input)
 }
 
 
@@ -27,14 +118,22 @@ fn var_path(input: &str) -> IResult<&str, Vec<&str>> {
     separated_list1(tag("."), var_name)(input)
 }
 
+fn expr(input: &str) -> IResult<&str, &str> {
+    take_until("}}")(input)
+        .map(|(next_input, expr)| {
+            (next_input, expr.trim())
+        })
+}
+
 fn subst(input: &str) -> IResult<&str, TemplatePart> {
     map(
         delimited(
             tag("${{"),
-            delimited(multispace0, var_path, multispace0),
+            delimited(multispace0, expr, multispace0),
+            // delimited(multispace0, var_path, multispace0),
             tag("}}")
         ),
-        |p| TemplatePart::Subst(p.iter().map(|&n| n.to_string()).collect())
+        |e| TemplatePart::Expr(e.to_string())
     )(input)
 }
 
@@ -68,8 +167,82 @@ pub fn template(input: &str) -> IResult<&str, Vec<TemplatePart>> {
 mod tests {
     use nom::{Err, error_position};
     use nom::error::ErrorKind;
+    // use crate::parser::TemplatePart::Expr;
+    use crate::parser::{Expr, parse_expression, val_attr, val_index};
 
     use super::{gap, subst, template, TemplatePart, var_name, var_path};
+
+    // #[test]
+    // fn test_expression() {
+    //     use Expr::*;
+    //
+    //     assert_eq!(
+    //         parse_expression("a.b"),
+    //         Ok((
+    //             "",
+    //             GetAttr(
+    //                 Val("a".to_string()).into_boxed(),
+    //                 "b".to_string()
+    //             )
+    //         ))
+    //     );
+    //     // assert_eq!(
+    //     //     expression("a.b.c"),
+    //     //     Ok((
+    //     //         "",
+    //     //         GetAttr(
+    //     //             GetAttr(
+    //     //                 Val("a".to_string()).into_boxed(),
+    //     //                 "b".to_string()
+    //     //             ).into_boxed(),
+    //     //             "c".to_string()
+    //     //         )
+    //     //     ))
+    //     // );
+    // }
+
+    // #[test]
+    // fn test_expression() {
+    //     assert_eq!(
+    //         val_index("a[b]"),
+    //         Ok(("", (Expr::Val("a".to_string()), Expr::Val("b".to_string()))))
+    //     );
+    //
+    //     assert_eq!(
+    //         val_index("a[\"b\"]"),
+    //         Ok(("", (Expr::Val("a".to_string()), Expr::Str("b".to_string()))))
+    //     );
+    //
+    //     assert_eq!(
+    //         val_index("a[0]"),
+    //         Ok(("", (Expr::Val("a".to_string()), Expr::Int(0))))
+    //     );
+    //
+    //     // assert_eq!(
+    //     //     val_index("b.c[0]"),
+    //     //     Ok((
+    //     //         "",
+    //     //         (
+    //     //             Expr::GetAttr(Box::new(Expr::Val("b".to_string())), "c".to_string()),
+    //     //             Expr::Int(0)
+    //     //         )
+    //     //     ))
+    //     // );
+    //     // assert_eq!(
+    //     //     val_index("a[b.c[0]]"),
+    //     //     Ok((
+    //     //         "",
+    //     //         (
+    //     //             Expr::Val("a".to_string()),
+    //     //             Expr::Index(
+    //     //                 Box::new(Expr::Attr(Box::new(Expr::Val("b".to_string())), "c".to_string())),
+    //     //                 Box::new(Expr::Int(0))
+    //     //             )
+    //     //         )
+    //     //     ))
+    //     // );
+    // }
+
 
     #[test]
     fn test_var_name_parser() {
@@ -124,19 +297,20 @@ mod tests {
         );
         assert_eq!(
             subst("${{}}"),
-            Err(Err::Error(error_position!("}}", ErrorKind::Many1Count)))
+            Ok(("", TemplatePart::Expr("".to_string())))
+            // Err(Err::Error(error_position!("", ErrorKind::Tag)))
         );
         assert_eq!(
             subst("${{a}}"),
-            Ok(("", TemplatePart::Subst(vec!("a".to_string()))))
+            Ok(("", TemplatePart::Expr("a".to_string())))
         );
         assert_eq!(
             subst("${{a.b}} "),
-            Ok((" ", TemplatePart::Subst(vec!("a".to_string(), "b".to_string()))))
+            Ok((" ", TemplatePart::Expr("a.b".to_string())))
         );
         assert_eq!(
-            subst("${{  a.b  }} "),
-            Ok((" ", TemplatePart::Subst(vec!("a".to_string(), "b".to_string()))))
+            subst("${{  a[0].b  }} "),
+            Ok((" ", TemplatePart::Expr("a[0].b".to_string())))
         );
     }
 
@@ -168,15 +342,15 @@ mod tests {
         );
         assert_eq!(
             template("${{abc}}"),
-            Ok(("", vec![TemplatePart::Subst(vec!["abc".to_string()])]))
+            Ok(("", vec![TemplatePart::Expr("abc".to_string())]))
         );
         assert_eq!(
             template("\\$${{abc}}: ${{x.y.0}}"),
             Ok(("", vec![
                 TemplatePart::Gap("\\$".to_string()),
-                TemplatePart::Subst(vec!["abc".to_string()]),
+                TemplatePart::Expr("abc".to_string()),
                 TemplatePart::Gap(": ".to_string()),
-                TemplatePart::Subst(vec!["x".to_string(), "y".to_string(), "0".to_string()]),
+                TemplatePart::Expr("x.y.0".to_string()),
             ]))
         );
         assert_eq!(

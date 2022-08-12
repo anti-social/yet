@@ -1,9 +1,9 @@
 ---
 !*Each
-  items: ${{values.models}}
+  items: ${{ values.models }}
   loop:
-  - key: "model.${{item.key}}:"
-    name: ${{item.value.color}} - ${{item.value.size}}
+  - key: "model.${{ item.key }}:"
+    name: ${{ item.value.color }} - ${{ item.value.size }}
 
 ---
 values:

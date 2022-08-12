@@ -1,14 +1,14 @@
 ---
 !*If
-condition: ${{values.cond-1}}
+condition: ${{values["cond-1"]}}
 then:
   a: !*If
-    condition: ${{values.cond-2}}
+    condition: ${{values["cond-2"]}}
     then: 1
     else: 2
 else:
   b: !*If
-    condition: ${{values.cond-2}}
+    condition: ${{values["cond-2"]}}
     then: [3, 4]
 
 ---

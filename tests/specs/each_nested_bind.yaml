@@ -1,20 +1,20 @@
 ---
 !*Each
-  items: ${{values.services}}
+  items: ${{ values.services }}
   bind: service
   loop:
   - kind: Deployment
     metadata:
-      name: ${{values.project.name}}-${{service.name}}
+      name: ${{ values.project.name }}-${{ service.name }}
     template:
       env: !*Each
         items: ${{values.env}}
         bind: environ
         loop:
-          ${{service.env-prefix}}_${{environ.name}}: ${{environ.value}}
+          ${{ service["env-prefix"] }}_${{ environ.name }}: ${{ environ.value }}
   - kind: Service
     metadata:
-      name: ${{values.project.name}}-${{service.name}}
+      name: ${{ values.project.name }}-${{ service.name }}
 
 ---
 values:

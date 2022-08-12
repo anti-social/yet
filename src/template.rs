@@ -1,88 +1,80 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
-use std::result;
+use std::path::{Path, PathBuf};
 
-use failure::{self, format_err};
-use failure_derive::Fail;
+use chumsky::Parser;
+use chumsky::error::Simple;
 
 use serde::Deserialize;
 
 use serde_yaml::{Mapping, Sequence, Value};
 use serde_yaml::value::{Tag, TaggedValue};
 
+use snafu::prelude::*;
+
 use crate::elements::{Each, EachDocument, Element, If};
-use crate::parser::template;
-use crate::parser::TemplatePart;
-use crate::template::TemplatingError::Resolve;
+use crate::eval::{EvalContext, EvalError};
+use crate::expr::{Template, template_parser};
 
-const VALUES_SCOPE: &str = "values";
-const ENV_SCOPE: &str = "env";
-
-pub trait WithPathResultExt<T, E>: failure::ResultExt<T, E> where E: fmt::Display {
-    fn with_path<P: AsRef<Path>>(self, path: P)
-        -> result::Result<T, failure::Context<String>>
-        where Self: Sized
-    {
-        self.with_context(|e| format!("{}: {}", e, path.as_ref().display()))
-    }
-}
-
-impl<T, E: fmt::Display> WithPathResultExt<T, E> for result::Result<T, E>
-    where result::Result<T, E>: failure::ResultExt<T, E> {}
-
-#[derive(Debug, Fail)]
+#[derive(Debug, Snafu)]
 pub enum TemplatingError {
-    #[fail(display = "template parsing error: {}", err)]
+    #[snafu(display("Could not read file {path:?}"))]
+    ReadFile { source: std::io::Error, path: PathBuf },
+    #[snafu(display("Template parsing error: {err}"))]
     ParseError { err: String },
-    #[fail(display = "missing field {:?} inside element {:?}", field, elem)]
+    #[snafu(display("Template parsing error"))]
+    ParseTemplate { errors: Vec<Simple<char>> },
+    #[snafu(display("{source}"))]
+    Eval { #[snafu(source)] source: EvalError },
+    #[snafu(display("Error when deserializing"))]
+    Yaml { source: serde_yaml::Error },
+    #[snafu(display("Error when serializing"))]
+    Serialize { source: serde_yaml::Error },
+    #[snafu(display("missing field {field:?} inside element {elem:?}"))]
     RequiredField { elem: &'static str, field: &'static str },
-    #[fail(display = "invalid field type {:?} inside element {:?}, allowed types: {:?}", field, elem, allowed_types)]
+    #[snafu(display("invalid field type {field:?} inside element {elem:?}, allowed types: {allowed_types:?}"))]
     InvalidFieldType { elem: &'static str, field: &'static str, allowed_types: &'static [&'static str] },
-    #[fail(display = "invalid resolved field type {:?} inside element {:?}, allowed types: {:?}", field, elem, allowed_types)]
+    #[snafu(display("invalid resolved field type {field:?} inside element {elem:?}, allowed types: {allowed_types:?}"))]
     InvalidResolvedFieldType { elem: &'static str, field: &'static str, allowed_types: &'static [&'static str] },
-    #[fail(display = "missing scope {}", 0)]
-    MissingScope(String),
-    #[fail(display = "undefined value {}", 0)]
-    UndefinedValue(String),
-    #[fail(display = "invalid value {}", 0)]
-    InvalidValue(String),
-    #[fail(display = "{}", 0)]
-    Resolve(String),
+    #[snafu(display("missing scope {name}"))]
+    MissingScope { name: String },
+    #[snafu(display("undefined value {name}"))]
+    UndefinedValue { name: String },
+    #[snafu(display("invalid value {name}"))]
+    InvalidValue { name: String },
+    #[snafu(display("{msg}"))]
+    Resolve { msg: String },
 }
 
-pub fn parse_template(fpath: &Path) -> Result<Vec<Value>, failure::Error> {
+pub fn parse_template(path: &Path) -> Result<Vec<Value>, TemplatingError> {
     let ref mut content = String::new();
-    File::open(fpath).with_path(fpath)?
-        .read_to_string(content).with_path(fpath)?;
+    File::open(path).context(ReadFileSnafu { path })?
+        .read_to_string(content).context(ReadFileSnafu { path })?;
 
     let mut values = vec!();
     for doc_de in serde_yaml::Deserializer::from_str(&content) {
-        values.push(Value::deserialize(doc_de)?);
+        values.push(Value::deserialize(doc_de).context(YamlSnafu)?);
     }
 
     Ok(values)
 }
 
-pub fn parse_values(fpath: &Path) -> Result<Value, failure::Error> {
+pub fn parse_values(path: &Path) -> Result<Value, TemplatingError> {
     let ref mut content = String::new();
-    File::open(fpath).with_path(fpath)?
-        .read_to_string(content).with_path(fpath)?;
+    File::open(path).context(ReadFileSnafu { path })?
+        .read_to_string(content).context(ReadFileSnafu { path })?;
 
     let de = serde_yaml::Deserializer::from_str(&content);
-    Ok(Value::deserialize(de)?)
+    Ok(Value::deserialize(de).context(YamlSnafu)?)
 }
 
-pub(crate) struct RenderContext<'a> {
-    values: Option<&'a Value>,
-    env: &'a HashMap<String, String>,
-    scopes_stack: RefCell<Vec<HashMap<String, Value>>>,
+pub(crate) struct RenderContext {
+    stacked_scopes: RefCell<Vec<Mapping>>,
 }
 
-pub(crate) struct ScopesGuard<'a>(&'a RefCell<Vec<HashMap<String, Value>>>);
+pub(crate) struct ScopesGuard<'a>(&'a RefCell<Vec<Mapping>>);
 
 impl<'a> Drop for ScopesGuard<'a> {
     fn drop(&mut self) {
@@ -90,64 +82,44 @@ impl<'a> Drop for ScopesGuard<'a> {
     }
 }
 
-impl<'a> RenderContext<'a> {
-    fn new(values: Option<&'a Value>, env: &'a HashMap<String, String>) -> RenderContext<'a> {
+impl EvalContext for RenderContext {
+    fn resolve(&self, name: &str) -> Result<Value, EvalError> {
+        for scope in self.stacked_scopes.borrow().iter().rev() {
+            if let Some(value) = scope.get(name) {
+                return Ok(value.clone());
+            }
+        }
+
+        Err(EvalError::GetAttr { name: name.to_string() })
+    }
+}
+
+impl RenderContext {
+    fn new(values: Option<&Value>, env: &HashMap<String, String>) -> RenderContext {
+        let mut root_scope = Mapping::new();
+        if let Some(values) = values {
+            root_scope.insert(Value::from("values"), values.clone());
+        }
+        let mut environ = Mapping::new();
+        for (env_key, env_value) in env.iter() {
+            environ.insert(Value::from(env_key.clone()), Value::from(env_value.clone()));
+        }
+        root_scope.insert(Value::from("env"), Value::from(environ));
         RenderContext {
-            values, env, scopes_stack: RefCell::new(vec!())
+            stacked_scopes: RefCell::new(vec!(root_scope)),
         }
     }
 
-    fn values(&self) -> Result<&Value, TemplatingError> {
-        self.values.ok_or(TemplatingError::MissingScope("values".to_string()))
+    // fn values(&self) -> Result<&Value, TemplatingError> {
+    //     self.values.ok_or(TemplatingError::MissingScope { name: "values".to_string() })
+    // }
+
+    pub(crate) fn push_scope(&self, scope: Mapping) -> ScopesGuard {
+        let mut new_scope = self.stacked_scopes.borrow().last().expect("missing root scope").clone();
+        new_scope.extend(scope);
+        self.stacked_scopes.borrow_mut().push(new_scope);
+        ScopesGuard(&self.stacked_scopes)
     }
-
-    pub(crate) fn push_scopes(&self, scopes: HashMap<String, Value>) -> ScopesGuard {
-        self.scopes_stack.borrow_mut().push(scopes);
-        ScopesGuard(&self.scopes_stack)
-    }
-
-    fn resolve_value(&self, var_path: &Vec<String>) -> Result<Value, TemplatingError> {
-        use self::TemplatingError::*;
-
-        let scope_and_path = var_path.split_first();
-        let value = match scope_and_path {
-            Some((scope, path)) if scope == VALUES_SCOPE => {
-                let var_ast = follow_ast(self.values()?, path, scope)?;
-                var_ast.clone()
-            },
-            Some((scope, path)) if scope == ENV_SCOPE => {
-                let key = path.join(".");
-                match self.env.get(&key) {
-                    Some(v) => {
-                        Value::String(v.clone())
-                    },
-                    None => return Err(UndefinedValue(format!("env.{}", key))),
-                }
-            },
-            Some((scope, path)) => {
-                let mut found_ast = None;
-                for scopes_frame in self.scopes_stack.borrow().iter().rev() {
-                    match scopes_frame.get(scope) {
-                        Some(scope_ast) => {
-                            found_ast = Some(
-                                follow_ast(scope_ast, path, scope)?.clone()
-                            );
-                            break;
-                        }
-                        None => continue
-                    }
-                }
-                if let Some(var_ast) = found_ast {
-                    var_ast
-                } else {
-                    return Err(MissingScope(scope.to_string()));
-                }
-            },
-            None => return Err(InvalidValue("".to_string())),
-        };
-        Ok(value)
-    }
-
 
     pub(crate) fn render(&self, ast: &Value) -> Result<Value, TemplatingError> {
         let (value, tag) = unpack_tagged_value(ast);
@@ -204,37 +176,29 @@ impl<'a> RenderContext<'a> {
         Ok(Value::Sequence(rendered_seq))
     }
 
-
     pub(crate) fn resolve_string(&self, tmpl: &str) -> Result<Value, TemplatingError> {
         use self::TemplatingError::*;
 
-        let parse_res = template(tmpl)
-            .map_err(|e| ParseError { err: format!("{}", e) })?;
-        let template_parts = match parse_res {
-            (rest, _) if rest.len() > 0 => {
-                return Err(ParseError { err: format!("Non empty parse") });
-            }
-            (_, template_parts) => {
-                template_parts
-            }
-        };
+        let parser = template_parser();
+        let parsed_template = parser.parse(tmpl)
+            .map_err(|errors| ParseTemplate { errors })?;
 
         // Single substitution can be an Ast,
         // for example `command: ${{ values.cmd }}`
-        match template_parts.split_first() {
-            Some((TemplatePart::Subst(var_path), rest))
+        match parsed_template.split_first() {
+            Some((Template::Expr(expr), rest))
             if rest.len() == 0 => {
-                return Ok(self.resolve_value(var_path)?);
+                return Ok(expr.eval(self).context(EvalSnafu)?);
             }
             _ => {}
         }
 
         let mut rendered_tmpl = String::new();
-        for p in &template_parts {
+        for p in &parsed_template {
             match p {
-                TemplatePart::Gap(gap) => rendered_tmpl.push_str(gap),
-                TemplatePart::Subst(var_path) => {
-                    match self.resolve_value(var_path)? {
+                Template::Text(text) => rendered_tmpl.push_str(&text),
+                Template::Expr(expr) => {
+                    match expr.eval(self).context(EvalSnafu)? {
                         Value::String(v) => {
                             rendered_tmpl.push_str(&v);
                         }
@@ -248,9 +212,9 @@ impl<'a> RenderContext<'a> {
                             rendered_tmpl.push_str("null");
                         }
                         _ => {
-                            return Err(Resolve(
-                                format!("Can render into string only scalar value or null")
-                            ));
+                            return Err(Resolve {
+                                msg: format!("Can render into string only scalar value or null")
+                            });
                         },
                     }
                 }
@@ -267,29 +231,6 @@ fn unpack_tagged_value(value: &Value) -> (&Value, Option<&Tag>) {
     } else {
         (value, None)
     }
-}
-
-fn follow_ast<'a>(ast: &'a Value, var_path: &[String], scope: &'a str)
-    -> Result<&'a Value, TemplatingError>
-{
-    use self::TemplatingError::*;
-
-    let mut cur_node = ast;
-    for (ix, p) in var_path.iter().enumerate() {
-        let map = match cur_node {
-            Value::Mapping(map) => map,
-            _ => return Err(Resolve(
-                format!("Expected a mapping: {}.{}", scope, var_path.join("."))
-            )),
-        };
-        cur_node = match map.get(p) {
-            Some(v) => v,
-            None => return Err(UndefinedValue(
-                format!("{}.{}", scope, var_path[..ix+1].join("."))
-            )),
-        };
-    }
-    Ok(cur_node)
 }
 
 fn maybe_wrap_with_tag(value: Value, tag: Option<&Tag>) -> Value {

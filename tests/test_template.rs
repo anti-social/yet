@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::fs::read_dir;
 use std::path::Path;
 
-use failure::format_err;
+use anyhow::{bail, Error as AnyError};
 
 use serde_yaml::Value;
 
 use yet::template::{parse_template, render};
 
 fn env_vars_from_ast(env: Option<&Value>)
-    -> Result<HashMap<String, String>, failure::Error>
+    -> Result<HashMap<String, String>, AnyError>
 {
     let mut env_vars = HashMap::new();
     match env {
@@ -18,17 +18,17 @@ fn env_vars_from_ast(env: Option<&Value>)
             for (key, val) in map {
                 match (key, val) {
                     (Value::String(k), Value::String(v)) => env_vars.insert(k.clone(), v.clone()),
-                    _ => return Err(format_err!("Env value must be a scalar")),
+                    _ => bail!("Env value must be a scalar"),
                 };
             }
         },
-        _ => return Err(format_err!("Env must be a map")),
+        _ => bail!("Env must be a map"),
     }
     Ok(env_vars)
 }
 
 fn test_file<P: AsRef<Path>>(test_file_path: P)
-    -> Result<(), failure::Error>
+    -> Result<(), AnyError>
 {
     let tmpl_and_test_data = parse_template(test_file_path.as_ref())?;
     let (tmpl, test_data) = tmpl_and_test_data.split_first().unwrap();
@@ -41,12 +41,12 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
                     map.get("values"),
                     match map.get("result") {
                         Some(Value::Mapping(res)) => res,
-                        None => return Err(format_err!("`result` is mandatory")),
-                        _ => return Err(format_err!("`result` must be a map")),
+                        None => bail!("`result` is mandatory"),
+                        _ => bail!("`result` must be a map"),
                     }
                 )
             }
-            _ => return Err(format_err!("Expected a map")),
+            _ => bail!("Expected a map"),
         };
 
         let env_vars = env_vars_from_ast(env)?;
@@ -73,14 +73,14 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
                 Value::Mapping(err_map) => {
                     match err_map.get("msg") {
                         Some(Value::String(err_msg)) => err_msg,
-                        None => return Err(format_err!("Missing `result.err.msg`")),
-                        _ => return Err(format_err!("`result.err.msg` must be a scalar")),
+                        None => bail!("Missing `result.err.msg`"),
+                        _ => bail!("`result.err.msg` must be a scalar"),
                     }
                 },
-                _ => return Err(format_err!("`result.err` must be a map")),
+                _ => bail!("`result.err` must be a map"),
             };
             match render_result {
-                Ok(_) => return Err(format_err!("Expected error")),
+                Ok(_) => bail!("Expected error"),
                 Err(e) => {
                     assert_eq!(
                         &format!("{}", e),
@@ -89,9 +89,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
                 }
             }
         } else {
-            return Err(format_err!(
-                "Result must contain `ok` or `err` key"
-            ))
+            bail!("Result must contain `ok` or `err` key")
         }
     }
 
@@ -99,7 +97,7 @@ fn test_file<P: AsRef<Path>>(test_file_path: P)
 }
 
 #[test]
-fn test_all_specs() -> Result<(), failure::Error> {
+fn test_all_specs() -> Result<(), AnyError> {
     for entry in read_dir("tests/specs")? {
         let test_file_path = entry?.path();
         if !test_file_path.is_file() { continue }

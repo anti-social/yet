@@ -4,7 +4,7 @@
   loop:
   - key: model.${{item.name}}
     name: !*If
-      condition: ${{values.simple-name}}
+      condition: ${{values["simple-name"]}}
       then:
         ${{item.name}}
       else:

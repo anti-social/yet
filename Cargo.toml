@@ -14,8 +14,12 @@ path = "src/bin/main.rs"
 
 [dependencies]
 argparse = "0.2.2"
-failure = "0.1.5"
-failure_derive = "0.1.5"
+chumsky = "0.8.0"
 nom = "7.1"
 serde = "1"
 serde_yaml = "0.9"
+snafu = "0.7"
+snafu-derive = "0.7"
+
+[dev-dependencies]
+anyhow = "1"

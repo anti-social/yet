@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use serde_yaml::{Mapping, Sequence, Value};
 
 use crate::template::{RenderContext, TemplatingError};
@@ -56,7 +54,7 @@ impl<'a> Element for If<'a> {
     }
 }
 
-enum EachItems<'a> {
+pub(crate) enum EachItems<'a> {
     Template(&'a String),
     Sequence(&'a Sequence),
     Mapping(&'a Mapping),
@@ -120,9 +118,9 @@ impl<'a> Each<'a> {
                 let map_items = items.iter()
                     .map(|(k, v)| {
                         let mut item = Mapping::new();
-                        item.insert(Value::String("key".to_string()), k.clone());
-                        item.insert(Value::String("value".to_string()), v.clone());
-                        Value::Mapping(item)
+                        item.insert(Value::from("key"), k.clone());
+                        item.insert(Value::from("value"), v.clone());
+                        Value::from(item)
                     })
                     .collect::<Sequence>();
                 Ok(map_items)
@@ -144,38 +142,38 @@ impl<'a> Element for Each<'a> {
 
         let mut result_ast = None;
         for item in resolved_items {
-            let mut scopes = HashMap::new();
-            scopes.insert(self.bind.to_string(), item);
-            let _scopes_guard = ctx.push_scopes(scopes);
+            let mut scope = Mapping::new();
+            scope.insert(Value::from(self.bind), item);
+            let _scopes_guard = ctx.push_scope(scope);
 
             match ctx.render(&self.body)? {
                 Value::Sequence(seq) => {
                     match result_ast {
                         None => {
-                            result_ast = Some(Value::Sequence(seq));
+                            result_ast = Some(Value::from(seq));
                         }
                         Some(Value::Sequence(ref mut result)) => {
                             result.extend(seq);
                         }
                         Some(_) => {
-                            return Err(Resolve(format!("Cannot merge into a list")));
+                            return Err(Resolve { msg: format!("Cannot merge into a list") });
                         }
                     }
                 }
                 Value::Mapping(map) => {
                     match result_ast {
                         None => {
-                            result_ast = Some(Value::Mapping(map));
+                            result_ast = Some(Value::from(map));
                         }
                         Some(Value::Mapping(ref mut result)) => {
                             result.extend(map);
                         }
                         Some(_) => {
-                            return Err(Resolve(format!("Cannot merge into a map")));
+                            return Err(Resolve { msg: format!("Cannot merge into a map") });
                         }
                     }
                 }
-                _ => return Err(Resolve(format!("Result of a loop cannot be a scalar"))),
+                _ => return Err(Resolve { msg: format!("Result of a loop cannot be a scalar") }),
             }
         }
 
@@ -195,19 +193,17 @@ impl<'a> EachDocument<'a> {
 
 impl<'a> Element for EachDocument<'a> {
     fn resolve(&self, ctx: &RenderContext) -> Result<Value, TemplatingError> {
-        use super::template::TemplatingError::*;
-
         let resolved_items = self.0.resolve_items(ctx)?;
 
         let mut docs = Sequence::new();
         for item in resolved_items {
-            let mut scopes = HashMap::new();
-            scopes.insert(self.0.bind.to_string(), item);
-            let _scopes_guard = ctx.push_scopes(scopes);
+            let mut scope = Mapping::new();
+            scope.insert(Value::from(self.0.bind), item);
+            let _scopes_guard = ctx.push_scope(scope);
 
             docs.push(ctx.render(&self.0.body)?);
         }
 
-        Ok(Value::Sequence(docs))
+        Ok(Value::from(docs))
     }
 }

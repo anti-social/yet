@@ -9,6 +9,8 @@ else:
 ---
 values:
   condition: true
+  map:
+    key: value
 result:
   ok:
     a: 1

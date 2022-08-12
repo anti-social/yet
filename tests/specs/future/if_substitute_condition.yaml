@@ -1,7 +1,7 @@
 ---
 commands: !*If
-  condition: ${{values.with-tests}}
-  then: ${{values.test-commands}}
+  condition: '${{ values["with-tests"] }}'
+  then: '${{ values["test-commands"] }}'
   else:
   - build
 

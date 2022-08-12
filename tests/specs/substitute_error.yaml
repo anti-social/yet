@@ -1,20 +1,20 @@
 ---
 test:
-  some: ${{values.some.value}}
+  some: ${{ values.some.value }}
   suite: ${{env.TEST_SUITE}}
 
 ---
 values:
   some:
-    value: Awesome!
+    value: awesome!
 result:
   err:
-    msg: "undefined value env.TEST_SUITE"
+    msg: "Missing attribute: TEST_SUITE"
 
----
-values: {}
-env:
-  suite: unit
-result:
-  err:
-    msg: "undefined value values.some"
+#---
+#values: {}
+#env:
+#  suite: unit
+#result:
+#  err:
+#    msg: "undefined value values.some"
