@@ -1,0 +1,13 @@
+---
+!*Let
+scope:
+  hello: !*Def { msg: "Hello ${{name}}" }
+in: !*Let
+  scope:
+    name: Alex
+  in: ${{ hello.msg }}
+
+---
+values:
+result:
+  ok: Hello Alex

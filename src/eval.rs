@@ -2,7 +2,9 @@ use serde_yaml::Value;
 use serde_yaml::value::{Tag, TaggedValue};
 
 use snafu::prelude::*;
+use crate::template::TemplatingError;
 
+use super::elements::Def;
 use super::expr::Expr;
 
 #[derive(Debug, PartialEq, Snafu)]
@@ -11,6 +13,8 @@ pub enum EvalError {
     Overflow { msg: &'static str, value: i64 },
     #[snafu(display("{msg}"))]
     Type { msg: String },
+    #[snafu(display("Name '{name}' is not defined"))]
+    Name { name: String },
     #[snafu(display("Missing attribute: {name}"))]
     GetAttr { name: String },
     #[snafu(display("Index error: {ix:?}"))]
@@ -19,6 +23,8 @@ pub enum EvalError {
 
 pub(crate) trait EvalContext {
     fn resolve(&self, name: &str) -> Result<Value, EvalError>;
+
+    fn render(&self, value: &Value) -> Result<Value, TemplatingError>;
 }
 
 impl Expr {
@@ -31,7 +37,14 @@ impl Expr {
             Int(v) => Value::from(*v),
             Float(v) => Value::from(*v),
             Bool(v) => Value::from(*v),
-            Ident(name) => ctx.resolve(name)?.clone(),
+            Ident(name) => {
+                match maybe_unpack_tagged_value(ctx.resolve(name)?.clone()) {
+                    (value, Some(tag)) if tag == Def::NAME => {
+                        ctx.render(&value).unwrap()
+                    }
+                    (value, tag) => maybe_pack_tagged_value(value, tag)
+                }
+            },
             Neg(expr) => {
                 if let (Value::Number(v), tag) = maybe_unpack_tagged_value(expr.eval(ctx)?) {
                     let negated = if let Some(v) = v.as_i64() {
@@ -133,12 +146,17 @@ mod tests {
 
     use crate::eval::{EvalContext, EvalError};
     use crate::expr::Expr::*;
+    use crate::template::TemplatingError;
 
     impl EvalContext for HashMap<&str, Value> {
         fn resolve(&self, name: &str) -> Result<Value, EvalError> {
             self.get(name)
                 .map(|v| v.clone())
                 .ok_or(EvalError::GetAttr { name: name.to_string() })
+        }
+
+        fn render(&self, _value: &Value) -> Result<Value, TemplatingError> {
+            todo!()
         }
     }
 

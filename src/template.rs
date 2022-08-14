@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use chumsky::Parser;
 use chumsky::error::Simple;
@@ -14,7 +15,7 @@ use serde_yaml::value::{Tag, TaggedValue};
 
 use snafu::prelude::*;
 
-use crate::elements::{Each, EachDocument, Element, If};
+use crate::elements::{Def, Each, EachDocument, Element, If, Let};
 use crate::eval::{EvalContext, EvalError};
 use crate::expr::{Template, template_parser};
 
@@ -32,6 +33,8 @@ pub enum TemplatingError {
     Yaml { source: serde_yaml::Error },
     #[snafu(display("Error when serializing"))]
     Serialize { source: serde_yaml::Error },
+    #[snafu(display("invalid element type {elem:?}, allowed types: {allowed_types:?}"))]
+    InvalidElementType { elem: &'static str, allowed_types: &'static [&'static str] },
     #[snafu(display("missing field {field:?} inside element {elem:?}"))]
     RequiredField { elem: &'static str, field: &'static str },
     #[snafu(display("invalid field type {field:?} inside element {elem:?}, allowed types: {allowed_types:?}"))]
@@ -70,8 +73,16 @@ pub fn parse_values(path: &Path) -> Result<Value, TemplatingError> {
     Ok(Value::deserialize(de).context(YamlSnafu)?)
 }
 
-pub(crate) struct RenderContext {
+pub(crate) struct RenderContext
+{
     stacked_scopes: RefCell<Vec<Mapping>>,
+    elements: HashMap<
+        Tag,
+        Rc<
+            for<'a>
+            fn(&'a Value) -> Result<Box<dyn Element + 'a>, TemplatingError>
+        >
+    >,
 }
 
 pub(crate) struct ScopesGuard<'a>(&'a RefCell<Vec<Mapping>>);
@@ -90,49 +101,20 @@ impl EvalContext for RenderContext {
             }
         }
 
-        Err(EvalError::GetAttr { name: name.to_string() })
-    }
-}
-
-impl RenderContext {
-    fn new(values: Option<&Value>, env: &HashMap<String, String>) -> RenderContext {
-        let mut root_scope = Mapping::new();
-        if let Some(values) = values {
-            root_scope.insert(Value::from("values"), values.clone());
-        }
-        let mut environ = Mapping::new();
-        for (env_key, env_value) in env.iter() {
-            environ.insert(Value::from(env_key.clone()), Value::from(env_value.clone()));
-        }
-        root_scope.insert(Value::from("env"), Value::from(environ));
-        RenderContext {
-            stacked_scopes: RefCell::new(vec!(root_scope)),
-        }
+        Err(EvalError::Name { name: name.to_string() })
     }
 
-    // fn values(&self) -> Result<&Value, TemplatingError> {
-    //     self.values.ok_or(TemplatingError::MissingScope { name: "values".to_string() })
-    // }
-
-    pub(crate) fn push_scope(&self, scope: Mapping) -> ScopesGuard {
-        let mut new_scope = self.stacked_scopes.borrow().last().expect("missing root scope").clone();
-        new_scope.extend(scope);
-        self.stacked_scopes.borrow_mut().push(new_scope);
-        ScopesGuard(&self.stacked_scopes)
-    }
-
-    pub(crate) fn render(&self, ast: &Value) -> Result<Value, TemplatingError> {
-        let (value, tag) = unpack_tagged_value(ast);
+    fn render(&self, value: &Value) -> Result<Value, TemplatingError> {
+        let (value, tag) = unpack_tagged_value(value);
 
         let (resolved_value, add_tag) = match (value, tag) {
-            (Value::Mapping(map), Some(tag)) if tag == If::NAME => {
-                (If::from_mapping(map)?.resolve(self)?, None)
-            }
-            (Value::Mapping(map), Some(tag)) if tag == Each::NAME => {
-                (Each::from_mapping(map)?.resolve(self)?, None)
+            (value, Some(tag)) if self.elements.contains_key(tag) => {
+                let elem_ctor = self.elements.get(tag).unwrap();
+                let elem = elem_ctor(value)?;
+                (elem.render(self)?, None)
             }
             (Value::Mapping(map), tag) => {
-                (self.resolve_mapping(&map)?, tag)
+                (self.render_mapping(&map)?.into(), tag)
             }
             (Value::Sequence(seq), tag) => {
                 (self.resolve_sequence(&seq)?, tag)
@@ -153,8 +135,46 @@ impl RenderContext {
         };
         Ok(maybe_wrap_with_tag(resolved_value, add_tag))
     }
+}
 
-    pub(crate) fn resolve_mapping(&self, map: &Mapping) -> Result<Value, TemplatingError> {
+impl RenderContext {
+    fn new(values: Option<&Value>, env: &HashMap<String, String>) -> RenderContext {
+        let mut root_scope = Mapping::new();
+        if let Some(values) = values {
+            root_scope.insert(Value::from("values"), values.clone());
+        }
+        let mut environ = Mapping::new();
+        for (env_key, env_value) in env.iter() {
+            environ.insert(Value::from(env_key.clone()), Value::from(env_value.clone()));
+        }
+        root_scope.insert(Value::from("env"), Value::from(environ));
+        RenderContext {
+            stacked_scopes: RefCell::new(vec!(root_scope)),
+            elements: HashMap::new(),
+        }
+    }
+
+    fn add_element(
+        &mut self, names: &[&'static str],
+        elem_ctor: for<'a> fn(&'a Value) -> Result<Box<dyn Element + 'a>, TemplatingError>
+    ) {
+        let elem_ctor = Rc::new(elem_ctor);
+        for name in names {
+            self.elements.insert(
+                Tag::new(name.to_string()),
+                elem_ctor.clone()
+            );
+        }
+    }
+
+    pub(crate) fn push_scope(&self, scope: Mapping) -> ScopesGuard {
+        let mut new_scope = self.stacked_scopes.borrow().last().expect("missing root scope").clone();
+        new_scope.extend(scope);
+        self.stacked_scopes.borrow_mut().push(new_scope);
+        ScopesGuard(&self.stacked_scopes)
+    }
+
+    pub(crate) fn render_mapping(&self, map: &Mapping) -> Result<Mapping, TemplatingError> {
         let mut rendered_map = Mapping::new();
         for (key, value) in map {
             let rendered_key = match key {
@@ -163,7 +183,7 @@ impl RenderContext {
             };
             rendered_map.insert(rendered_key, self.render(value)?);
         }
-        Ok(Value::Mapping(rendered_map))
+        Ok(rendered_map)
     }
 
 
@@ -246,10 +266,15 @@ fn maybe_wrap_with_tag(value: Value, tag: Option<&Tag>) -> Value {
 pub fn render(ast: &Value, values: Option<&Value>, env: &HashMap<String, String>)
     -> Result<Vec<Value>, TemplatingError>
 {
-    let ctx = RenderContext::new(values, env);
+    let mut ctx = RenderContext::new(values, env);
+    ctx.add_element(&[Let::NAME], Let::from_value_boxed);
+    ctx.add_element(&[Def::NAME], Def::from_value_boxed);
+    ctx.add_element(&[If::NAME], If::from_value_boxed);
+    ctx.add_element(&[Each::NAME], Each::from_value_boxed);
+
     match unpack_tagged_value(ast) {
-        (Value::Mapping(map), Some(tag)) if tag == EachDocument::NAME => {
-            match EachDocument::from_mapping(map)?.resolve(&ctx)? {
+        (value, Some(tag)) if tag == EachDocument::NAME => {
+            match EachDocument::from_value(value)?.render(&ctx)? {
                 Value::Sequence(seq) => Ok(seq),
                 _ => unreachable!("*EachDocument must return a sequence"),
             }

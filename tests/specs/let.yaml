@@ -1,0 +1,18 @@
+---
+!*Let
+scope:
+  en: Hello ${{ values.user }}!
+  uk: Добрий вечір, ${{ values.user }}, ми з України!
+in:
+  hello-all: |
+    ${{ en }}
+    ${{ uk }}
+
+---
+values:
+  user: Alex
+result:
+  ok:
+    hello-all: |
+      Hello Alex!
+      Добрий вечір, Alex, ми з України!
