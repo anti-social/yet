@@ -97,7 +97,6 @@ jobs:
 
         mkdir -p $DIST_DIR
         cp target/${{ matrix.target }}/release/${BINARY_NAME} $DIST_DIR
-        cp elasticsearch_exporter.yaml $DIST_DIR
 
         cd dist
         tar -czf $ARCHIVE_NAME $DIST_NAME
