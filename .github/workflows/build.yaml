@@ -1,0 +1,117 @@
+on:
+  push:
+    tags: [v*]
+
+name: Create Release
+env:
+  BINARY_NAME: yet
+
+jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+
+    - name: Prepare release info
+      run: |
+        set -eux
+        if [[ $GITHUB_REF_NAME == v* ]]; then
+          VERSION=$(echo $GITHUB_REF_NAME | sed 's/v\(.*\)/\1/')
+        fi
+
+        mkdir release
+        echo "$VERSION" > release/version
+        echo "${{  steps.create_release.outputs.upload_url }}" > release/upload-url
+
+    - name: Upload release info
+      uses: actions/upload-artifact@v2
+      with:
+        name: release
+        path: release
+
+  build-release:
+    name: Build and publish release
+    runs-on: ubuntu-20.04
+    needs: [create-release]
+    strategy:
+      matrix:
+        include:
+        - target: x86_64-unknown-linux-gnu
+        - target: x86_64-unknown-linux-musl
+    steps:
+    - name: Checkout sources
+      uses: actions/checkout@v2
+
+    - name: Install stable toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        override: true
+
+    - name: Build release binaries
+      id: build_release
+      uses: actions-rs/cargo@v1
+      env:
+        RUSTFLAGS: ${{ matrix.rustflags }}
+      with:
+        use-cross: true
+        command: build
+        args: --release --target=${{ matrix.target }}
+
+    - name: Check binary
+      # TODO: Run inside a container
+      run: |
+        set -eux
+        ./target/${{ matrix.target }}/release/${BINARY_NAME} --help
+
+    - name: Download release info
+      uses: actions/download-artifact@v2
+      with:
+        name: release
+        path: release
+
+    - name: Release info
+      id: release_info
+      run: |
+        echo "::set-output name=version::$(cat release/version)"
+        echo "::set-output name=upload_url::$(cat release/upload-url)"
+
+    - name: Compress
+      id: archive
+      run: |
+        DIST_NAME=${BINARY_NAME}-${{ steps.release_info.outputs.version }}-${{ matrix.target }}
+        DIST_DIR=dist/$DIST_NAME
+        ARCHIVE_NAME=$DIST_NAME.tar.gz
+        ARCHIVE_PATH=dist/$ARCHIVE_NAME
+
+        mkdir -p $DIST_DIR
+        cp target/${{ matrix.target }}/release/${BINARY_NAME} $DIST_DIR
+        cp elasticsearch_exporter.yaml $DIST_DIR
+
+        cd dist
+        tar -czf $ARCHIVE_NAME $DIST_NAME
+        ls -l $ARCHIVE_NAME
+
+        echo "::set-output name=name::$ARCHIVE_NAME"
+        echo "::set-output name=path::$ARCHIVE_PATH"
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.release_info.outputs.upload_url }}
+        asset_path: ./${{ steps.archive.outputs.path }}
+        asset_name: ${{ steps.archive.outputs.name }}
+        asset_content_type: application/gzip
