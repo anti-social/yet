@@ -1,0 +1,14 @@
+---
+!*Let
+scope:
+  name: Alex
+  title: Mr.
+in:
+  msg: Hello ${{ values.title }} ${{ name }}
+
+---
+values:
+  title: !*Def ${{ title }}
+result:
+  ok:
+    msg: Hello Mr. Alex

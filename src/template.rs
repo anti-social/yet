@@ -206,9 +206,13 @@ impl RenderContext {
         // Single substitution can be an Ast,
         // for example `command: ${{ values.cmd }}`
         match parsed_template.split_first() {
-            Some((Template::Expr(expr), rest))
-            if rest.len() == 0 => {
-                return Ok(expr.eval(self).context(EvalSnafu)?);
+            Some((Template::Expr(expr), rest)) if rest.len() == 0 => {
+                return match expr.eval(self).context(EvalSnafu)? {
+                    Value::Tagged(tagged_value) if tagged_value.tag == Def::NAME => {
+                        self.render(&tagged_value.value)
+                    }
+                    value => Ok(value)
+                };
             }
             _ => {}
         }
@@ -219,6 +223,13 @@ impl RenderContext {
                 Template::Text(text) => rendered_tmpl.push_str(&text),
                 Template::Expr(expr) => {
                     match expr.eval(self).context(EvalSnafu)? {
+                        Value::Tagged(tagged_value) if tagged_value.tag == Def::NAME => {
+                            if let Value::String(value) = self.render(&tagged_value.value)? {
+                                rendered_tmpl.push_str(&value);
+                            } else {
+                                panic!("Catch!!!");
+                            }
+                        }
                         Value::String(v) => {
                             rendered_tmpl.push_str(&v);
                         }
